@@ -58,6 +58,8 @@ class App(tk.Tk):
             # Clean Exit
             #self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+        #------------------------------------------------------- GUI ---------------------------------------------------------
+
         # FUNKTION: Läd und skaliert die Wareneingang- und Warenausgang-Bilder
         def load_and_scale_images(self, breite, hoehe):
             """Lädt und skaliert die Wareneingang- und Warenausgang-Bilder"""
@@ -127,38 +129,41 @@ class App(tk.Tk):
             left_frame = tk.Frame(main_frame)
             left_frame.pack(side="left", expand=True, fill="both", padx=20, pady=20)
 
-            # Frame für Button + Dropdown nebeneinander
-            dropdown_frame = tk.Frame(left_frame)
-            dropdown_frame.pack(pady=10)
-
-
-            # Dropdown für Excel-Dateien rechts vom Button
-            self.dropdown_var = tk.StringVar()
-            self.dropdown = ttk.Combobox(dropdown_frame, textvariable=self.dropdown_var, width=30)
-            self.dropdown.pack(side="left")
+            # Dropdown für Excel-Dateien aus Eingang-Verzeichnis
+            self.dropdown_var_eingang = tk.StringVar()
+            self.dropdown_eingang = ttk.Combobox(left_frame, textvariable=self.dropdown_var_eingang, width=30)
+            # Initial laden
+            excel_files_eingang = self.load_excel_files("../eingang")
+            self.dropdown_eingang['values'] = excel_files_eingang
+            # Erste Datei automatisch auswählen
+            if excel_files_eingang:
+                self.dropdown_eingang.set(excel_files_eingang[0])
+            # Event-Binding für automatische Aktualisierung
+            self.dropdown_eingang.bind('<Button-1>', self.refresh_dropdown_eingang)
+            self.dropdown_eingang.pack(pady=10)
 
             # Label "Erfasste Artikel"
             tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
 
             # Tabelle für Artikel
             columns = ("artikelnummer", "menge", "karton", "beutel", "status")
-            self.tree = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
+            self.tree_eingang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
 
             # Spaltenüberschriften setzen
-            self.tree.heading("artikelnummer", text="Artikelnummer")
-            self.tree.heading("menge", text="Menge")
-            self.tree.heading("karton", text="Karton")
-            self.tree.heading("beutel", text="Beutel")
-            self.tree.heading("status", text="Status")
+            self.tree_eingang.heading("artikelnummer", text="Artikelnummer")
+            self.tree_eingang.heading("menge", text="Menge")
+            self.tree_eingang.heading("karton", text="Karton")
+            self.tree_eingang.heading("beutel", text="Beutel")
+            self.tree_eingang.heading("status", text="Status")
 
             # Spaltenbreite
-            self.tree.column("artikelnummer", width=120, anchor="center")
-            self.tree.column("menge", width=80, anchor="center")
-            self.tree.column("karton", width=80, anchor="center")
-            self.tree.column("beutel", width=80, anchor="center")
-            self.tree.column("status", width=80, anchor="center")
+            self.tree_eingang.column("artikelnummer", width=120, anchor="center")
+            self.tree_eingang.column("menge", width=80, anchor="center")
+            self.tree_eingang.column("karton", width=80, anchor="center")
+            self.tree_eingang.column("beutel", width=80, anchor="center")
+            self.tree_eingang.column("status", width=80, anchor="center")
 
-            self.tree.pack(expand=True, fill="both")
+            self.tree_eingang.pack(expand=True, fill="both")
 
             # Rechte Hälfte
             self.right_frame = tk.Frame(main_frame)
@@ -197,8 +202,71 @@ class App(tk.Tk):
 
         # FUNKTION: Erstelle Layout des Warenausgangs
         def build_warenausgang(self):
+            # Überschrift
             tk.Label(self.warenausgang_seite, text="Warenausgang", font=("Arial", 30)).pack(pady=20)
-            tk.Button(self.warenausgang_seite, text="Zurück", command=self.show_startseite).pack(pady=10)
+
+            # Innerer Frame für linke und rechte Hälfte
+            main_frame = tk.Frame(self.warenausgang_seite)
+            main_frame.pack(expand=True, fill="both")
+
+            # Linke Hälfte
+            left_frame = tk.Frame(main_frame)
+            left_frame.pack(side="left", expand=True, fill="both", padx=20, pady=20)
+
+            # Dropdown für Excel-Dateien aus Ausgang-Verzeichnis
+            self.dropdown_var_ausgang = tk.StringVar()
+            self.dropdown_ausgang = ttk.Combobox(left_frame, textvariable=self.dropdown_var_ausgang, width=30)
+            # Initial laden
+            excel_files_ausgang = self.load_excel_files("../ausgang")
+            self.dropdown_ausgang['values'] = excel_files_ausgang
+            # Erste Datei automatisch auswählen
+            if excel_files_ausgang:
+                self.dropdown_ausgang.set(excel_files_ausgang[0])
+            # Event-Binding für automatische Aktualisierung
+            self.dropdown_ausgang.bind('<Button-1>', self.refresh_dropdown_ausgang)
+            self.dropdown_ausgang.pack(pady=10)
+
+            # Label "Erfasste Artikel"
+            tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
+
+            # Tabelle für Artikel
+            columns = ("artikelnummer", "menge", "karton", "beutel", "status")
+            self.tree_ausgang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
+
+            # Spaltenüberschriften setzen
+            self.tree_ausgang.heading("artikelnummer", text="Artikelnummer")
+            self.tree_ausgang.heading("menge", text="Menge")
+            self.tree_ausgang.heading("karton", text="Karton")
+            self.tree_ausgang.heading("beutel", text="Beutel")
+            self.tree_ausgang.heading("status", text="Status")
+
+            # Spaltenbreite
+            self.tree_ausgang.column("artikelnummer", width=70, anchor="center")
+            self.tree_ausgang.column("menge", width=70, anchor="center")
+            self.tree_ausgang.column("karton", width=70, anchor="center")
+            self.tree_ausgang.column("beutel", width=70, anchor="center")
+            self.tree_ausgang.column("status", width=70, anchor="center")
+
+            self.tree_ausgang.pack(expand=True, fill="both")
+
+            # Rechte Hälfte
+            self.right_frame = tk.Frame(main_frame)
+            self.right_frame.pack(side="right", expand=True, fill="both", padx=20, pady=20)
+
+            # Webcam starten
+            #self.start_webcam()
+
+            # Frame für Buttons unten
+            button_frame = tk.Frame(self.warenausgang_seite)
+            button_frame.pack(pady=10)
+
+            # "Drucken"-Button
+            tk.Button(button_frame, text="Drucken").pack(side="left", padx=5)
+            # "Zurück"-Button
+            tk.Button(button_frame, text="Zurück", command=self.show_startseite).pack(side="left", padx=5)
+
+            # Excel-Dateien laden
+            #self.load_excel_files()
 
             # add Logo
             self.add_logo(self.warenausgang_seite)
@@ -215,6 +283,35 @@ class App(tk.Tk):
             # Tastatur-Shortcuts für Wareneingang-Seite definieren
             self.bind("<Return>", lambda e: self.drucken())        # Enter-Taste → Drucken-Funktion
             self.bind("<Escape>", lambda e: self.show_startseite()) # Escape-Taste → Zurück zur Startseite
+
+        #------------------------------------------------------- FUNKTIONALITÄT ---------------------------------------------------------
+
+        # FUNKTION: Lädt Excel-Dateien aus einem Verzeichnis
+        def load_excel_files(self, directory):
+            """Lädt alle Excel-Dateien aus dem angegebenen Verzeichnis"""
+            excel_files = []
+            try:
+                if os.path.exists(directory):
+                    for file in os.listdir(directory):
+                        if file.endswith(('.xlsx', '.xls')):
+                            excel_files.append(file)
+                else:
+                    print(f"Verzeichnis nicht gefunden: {directory}")
+            except Exception as e:
+                print(f"Fehler beim Laden der Excel-Dateien: {e}")
+            return excel_files
+
+        # FUNKTION: Aktualisiert Dropdown-Inhalte für Wareneingang
+        def refresh_dropdown_eingang(self, event=None):
+            """Aktualisiert Dropdown-Inhalte beim Klicken - Wareneingang"""
+            excel_files = self.load_excel_files("../eingang")
+            self.dropdown_eingang['values'] = excel_files
+
+        # FUNKTION: Aktualisiert Dropdown-Inhalte für Warenausgang
+        def refresh_dropdown_ausgang(self, event=None):
+            """Aktualisiert Dropdown-Inhalte beim Klicken - Warenausgang"""
+            excel_files = self.load_excel_files("../ausgang")
+            self.dropdown_ausgang['values'] = excel_files
 
 if __name__ == "__main__":
     app = App()
