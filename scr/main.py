@@ -40,8 +40,9 @@ class App(tk.Tk):
             self.warenausgang_seite = tk.Frame(self)
             
             # Artikel-Daten
-            self.artikel_dict = {}         # Excel-Daten
-            self.detected_articles = []    # Erkannte Artikel
+            self.artikel_dict_eingang = []    # Excel-Daten Wareneingang
+            self.artikel_dict_ausgang = []    # Excel-Daten Warenausgang
+            self.detected_articles = []       # Erkannte Artikel
             
             # Startseite aufbauen
             self.build_startseite()
@@ -142,17 +143,21 @@ class App(tk.Tk):
             # Initial laden
             excel_files_eingang = self.load_excel_files("../eingang")
             self.dropdown_eingang['values'] = excel_files_eingang
-            # Erste Datei automatisch auswählen
+            # Erste Datei automatisch auswählen und laden
             if excel_files_eingang:
                 self.dropdown_eingang.set(excel_files_eingang[0])
-            # Event-Binding für automatische Aktualisierung
+                # Erste Datei automatisch laden
+                filepath = os.path.join("../eingang", excel_files_eingang[0])
+                self.load_excel_data(filepath, "eingang")
+            # Event-Binding für automatische Aktualisierung und Excel-Laden
             self.dropdown_eingang.bind('<Button-1>', self.refresh_dropdown_eingang)
+            self.dropdown_eingang.bind('<<ComboboxSelected>>', self.on_excel_select_eingang)
             self.dropdown_eingang.pack(pady=10)
 
             # Label "Erfasste Artikel"
             tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
 
-            # Tabelle für Artikel
+            # Tabelle für Artikel (bleibt leer bis Artikel erkannt werden)
             columns = ("artikelnummer", "menge", "karton", "beutel", "status")
             self.tree_eingang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
 
@@ -226,17 +231,21 @@ class App(tk.Tk):
             # Initial laden
             excel_files_ausgang = self.load_excel_files("../ausgang")
             self.dropdown_ausgang['values'] = excel_files_ausgang
-            # Erste Datei automatisch auswählen
+            # Erste Datei automatisch auswählen und laden
             if excel_files_ausgang:
                 self.dropdown_ausgang.set(excel_files_ausgang[0])
-            # Event-Binding für automatische Aktualisierung
+                # Erste Datei automatisch laden
+                filepath = os.path.join("../ausgang", excel_files_ausgang[0])
+                self.load_excel_data(filepath, "ausgang")
+            # Event-Binding für automatische Aktualisierung und Excel-Laden
             self.dropdown_ausgang.bind('<Button-1>', self.refresh_dropdown_ausgang)
+            self.dropdown_ausgang.bind('<<ComboboxSelected>>', self.on_excel_select_ausgang)
             self.dropdown_ausgang.pack(pady=10)
 
             # Label "Erfasste Artikel"
             tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
 
-            # Tabelle für Artikel
+            # Tabelle für Artikel (bleibt leer bis Artikel erkannt werden)
             columns = ("artikelnummer", "menge", "karton", "beutel", "empfaenger", "status")
             self.tree_ausgang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
 
@@ -310,6 +319,60 @@ class App(tk.Tk):
                 print(f"Fehler beim Laden der Excel-Dateien: {e}")
             return excel_files
 
+        # FUNKTION: Lädt Excel-Datei und speichert Inhalt
+        def load_excel_data(self, filepath, page_type="eingang"):
+            """Lädt Excel-Datei und speichert Daten in artikel_dict"""
+            try:
+                # Excel-Datei öffnen
+                workbook = openpyxl.load_workbook(filepath)
+                sheet = workbook.active
+                
+                # Spaltentitel aus Zeile 1 lesen
+                headers = []
+                for cell in sheet[1]:
+                    if cell.value:
+                        headers.append(cell.value)
+                    else:
+                        break
+                
+                # Datenzeilen ab Zeile 2 lesen
+                data_rows = []
+                for row in sheet.iter_rows(min_row=2, values_only=True):
+                    if any(row):  # Nur nicht-leere Zeilen
+                        row_dict = {}
+                        for i, value in enumerate(row[:len(headers)]):
+                            row_dict[headers[i]] = value if value is not None else ""
+                        data_rows.append(row_dict)
+                
+                # Je nach Seite in entsprechende Variable speichern
+                if page_type == "eingang":
+                    self.artikel_dict_eingang = data_rows
+                    print(f"Wareneingang: {len(data_rows)} Artikel aus Excel geladen")
+                    print(f"Spaltentitel: {headers}")
+                    print("Erste 3 Datensätze:")
+                    for i, row in enumerate(data_rows[:3]):
+                        print(f"  Zeile {i+2}: {row}")
+                    if len(data_rows) > 3:
+                        print(f"  ... und {len(data_rows)-3} weitere Datensätze")
+                else:
+                    self.artikel_dict_ausgang = data_rows
+                    print(f"Warenausgang: {len(data_rows)} Artikel aus Excel geladen")
+                    print(f"Spaltentitel: {headers}")
+                    print("Erste 3 Datensätze:")
+                    for i, row in enumerate(data_rows[:3]):
+                        print(f"  Zeile {i+2}: {row}")
+                    if len(data_rows) > 3:
+                        print(f"  ... und {len(data_rows)-3} weitere Datensätze")
+                
+                print("-" * 50)  # Trennlinie für bessere Lesbarkeit
+                
+                workbook.close()
+                return data_rows
+                
+            except Exception as e:
+                print(f"Fehler beim Laden der Excel-Datei: {e}")
+                return []
+
         # FUNKTION: Aktualisiert Dropdown-Inhalte für Wareneingang
         def refresh_dropdown_eingang(self, event=None):
             """Aktualisiert Dropdown-Inhalte beim Klicken - Wareneingang"""
@@ -321,6 +384,24 @@ class App(tk.Tk):
             """Aktualisiert Dropdown-Inhalte beim Klicken - Warenausgang"""
             excel_files = self.load_excel_files("../ausgang")
             self.dropdown_ausgang['values'] = excel_files
+
+        # FUNKTION: Event-Handler für Dropdown-Auswahl Wareneingang
+        def on_excel_select_eingang(self, event=None):
+            """Wird aufgerufen wenn Excel-Datei im Wareneingang ausgewählt wird"""
+            selected_file = self.dropdown_var_eingang.get()
+            if selected_file:
+                filepath = os.path.join("../eingang", selected_file)
+                self.load_excel_data(filepath, "eingang")
+                # KEINE Tabellen-Aktualisierung!
+
+        # FUNKTION: Event-Handler für Dropdown-Auswahl Warenausgang
+        def on_excel_select_ausgang(self, event=None):
+            """Wird aufgerufen wenn Excel-Datei im Warenausgang ausgewählt wird"""
+            selected_file = self.dropdown_var_ausgang.get()
+            if selected_file:
+                filepath = os.path.join("../ausgang", selected_file)
+                self.load_excel_data(filepath, "ausgang")
+                # KEINE Tabellen-Aktualisierung!
 
         # FUNKTION: Sucht nach der Logitech C920 Webcam
         def find_logitech_c920(self, show_popup=False):
@@ -464,6 +545,11 @@ class App(tk.Tk):
         def drucken(self):
             """Placeholder für Drucken-Funktionalität"""
             print("Drucken-Funktion aufgerufen")
+
+        # FUNKTION: Placeholder für Find Printer-Funktion
+        def find_printer(self):
+            """Placeholder für Find Printer-Funktionalität"""
+            print("Find Printer-Funktion aufgerufen")
 
 if __name__ == "__main__":
     app = App()
