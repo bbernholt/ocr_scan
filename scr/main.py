@@ -55,6 +55,10 @@ class App(tk.Tk):
             # Startseite anzeigen
             self.show_startseite()
 
+            # Webcam suchen und initialisieren (in separatem Thread)
+            self.cap = None
+            threading.Thread(target=self.initialize_webcam, daemon=True).start()
+
             # Clean Exit
             #self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -105,6 +109,9 @@ class App(tk.Tk):
 
         # FUNKTION: Zeige das Layout der Startseite an
         def show_startseite(self):
+            # Webcam-Stream stoppen falls aktiv
+            self.stop_webcam_stream()
+            
             self.wareneingang_seite.pack_forget()  # Versteckt die Wareneingang-Seite
             self.warenausgang_seite.pack_forget()  # Versteckt die Warenausgang-Seite
             self.startseite.pack(expand=True, fill="both")  # Zeigt die Startseite an
@@ -165,12 +172,9 @@ class App(tk.Tk):
 
             self.tree_eingang.pack(expand=True, fill="both")
 
-            # Rechte Hälfte
-            self.right_frame = tk.Frame(main_frame)
-            self.right_frame.pack(side="right", expand=True, fill="both", padx=20, pady=20)
-
-            # Webcam starten
-            #self.start_webcam()
+            # Rechte Hälfte - Webcam-Bereich (GEÄNDERT: expand=False)
+            self.right_frame_eingang = tk.Frame(main_frame, bg="black")
+            self.right_frame_eingang.pack(side="right", expand=False, fill="y", padx=20, pady=20)
 
             # Frame für Buttons unten
             button_frame = tk.Frame(self.wareneingang_seite)
@@ -180,9 +184,6 @@ class App(tk.Tk):
             tk.Button(button_frame, text="Drucken").pack(side="left", padx=5)
             # "Zurück"-Button
             tk.Button(button_frame, text="Zurück", command=self.show_startseite).pack(side="left", padx=5)
-
-            # Excel-Dateien laden
-            #self.load_excel_files()
 
             # add Logo
             self.add_logo(self.wareneingang_seite)
@@ -195,6 +196,12 @@ class App(tk.Tk):
             
             # Wareneingang-Seite anzeigen und Layout füllen
             self.wareneingang_seite.pack(expand=True, fill="both")
+            
+            # Webcam-Verfügbarkeit prüfen
+            self.check_webcam_for_page()
+            
+            # Webcam-Stream starten
+            self.start_webcam_stream(self.right_frame_eingang)
             
             # Tastatur-Shortcuts für Wareneingang-Seite definieren
             self.bind("<Return>", lambda e: self.drucken())        # Enter-Taste → Drucken-Funktion
@@ -230,7 +237,7 @@ class App(tk.Tk):
             tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
 
             # Tabelle für Artikel
-            columns = ("artikelnummer", "menge", "karton", "beutel", "status")
+            columns = ("artikelnummer", "menge", "karton", "beutel", "empfaenger", "status")
             self.tree_ausgang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
 
             # Spaltenüberschriften setzen
@@ -238,6 +245,7 @@ class App(tk.Tk):
             self.tree_ausgang.heading("menge", text="Menge")
             self.tree_ausgang.heading("karton", text="Karton")
             self.tree_ausgang.heading("beutel", text="Beutel")
+            self.tree_ausgang.heading("empfaenger", text="Empfänger")
             self.tree_ausgang.heading("status", text="Status")
 
             # Spaltenbreite
@@ -245,16 +253,14 @@ class App(tk.Tk):
             self.tree_ausgang.column("menge", width=70, anchor="center")
             self.tree_ausgang.column("karton", width=70, anchor="center")
             self.tree_ausgang.column("beutel", width=70, anchor="center")
-            self.tree_ausgang.column("status", width=70, anchor="center")
+            self.tree_ausgang.column("empfaenger", width=70, anchor="center")
+            self.tree_ausgang.column("status", width=50, anchor="center")
 
             self.tree_ausgang.pack(expand=True, fill="both")
 
-            # Rechte Hälfte
-            self.right_frame = tk.Frame(main_frame)
-            self.right_frame.pack(side="right", expand=True, fill="both", padx=20, pady=20)
-
-            # Webcam starten
-            #self.start_webcam()
+            # Rechte Hälfte - Webcam-Bereich (GEÄNDERT: expand=False)
+            self.right_frame_ausgang = tk.Frame(main_frame, bg="black")
+            self.right_frame_ausgang.pack(side="right", expand=False, fill="y", padx=20, pady=20)
 
             # Frame für Buttons unten
             button_frame = tk.Frame(self.warenausgang_seite)
@@ -264,9 +270,6 @@ class App(tk.Tk):
             tk.Button(button_frame, text="Drucken").pack(side="left", padx=5)
             # "Zurück"-Button
             tk.Button(button_frame, text="Zurück", command=self.show_startseite).pack(side="left", padx=5)
-
-            # Excel-Dateien laden
-            #self.load_excel_files()
 
             # add Logo
             self.add_logo(self.warenausgang_seite)
@@ -280,7 +283,13 @@ class App(tk.Tk):
             # Warenausgang-Seite anzeigen und Layout füllen
             self.warenausgang_seite.pack(expand=True, fill="both")
             
-            # Tastatur-Shortcuts für Wareneingang-Seite definieren
+            # Webcam-Verfügbarkeit prüfen
+            self.check_webcam_for_page()
+            
+            # Webcam-Stream starten
+            self.start_webcam_stream(self.right_frame_ausgang)
+            
+            # Tastatur-Shortcuts für Warenausgang-Seite definieren
             self.bind("<Return>", lambda e: self.drucken())        # Enter-Taste → Drucken-Funktion
             self.bind("<Escape>", lambda e: self.show_startseite()) # Escape-Taste → Zurück zur Startseite
 
@@ -312,6 +321,149 @@ class App(tk.Tk):
             """Aktualisiert Dropdown-Inhalte beim Klicken - Warenausgang"""
             excel_files = self.load_excel_files("../ausgang")
             self.dropdown_ausgang['values'] = excel_files
+
+        # FUNKTION: Sucht nach der Logitech C920 Webcam
+        def find_logitech_c920(self, show_popup=False):
+            """Sucht nach der Logitech C920 Webcam über den Gerätenamen"""
+            try:
+                # FilterGraph verwenden um alle verfügbaren Kameras zu finden
+                graph = FilterGraph()
+                devices = graph.get_input_devices()
+                print(f"Gefundene Geräte: {devices}")
+                
+                # Nach Logitech C920 suchen
+                for device_index, device_name in enumerate(devices):
+                    if "c920" in device_name.lower():
+                        print(f"Logitech C920 gefunden: {device_name} (Index: {device_index})")
+                        return device_index
+                
+                # Wenn nicht gefunden und Pop-up erwünscht
+                if show_popup:
+                    self.show_camera_not_found_popup()
+                return None
+                
+            except Exception as e:
+                print(f"Fehler beim Suchen der Webcam: {e}")
+                if show_popup:
+                    self.show_camera_not_found_popup()
+                return None
+
+        # FUNKTION: Webcam initialisieren
+        def initialize_webcam(self):
+            """Initialisiert die Webcam falls gefunden"""
+            camera_index = self.find_logitech_c920(show_popup=False)  # Kein Pop-up beim Start
+            if camera_index is not None:
+                try:
+                    self.cap = cv2.VideoCapture(camera_index)
+                    if self.cap.isOpened():
+                        print(f"Webcam erfolgreich initialisiert (Index: {camera_index})")
+                        return True
+                    else:
+                        print("Webcam konnte nicht geöffnet werden")
+                        return False
+                except Exception as e:
+                    print(f"Fehler beim Öffnen der Webcam: {e}")
+                    return False
+            return False
+
+        # FUNKTION: Prüft Webcam-Verfügbarkeit für Wareneingang/Warenausgang
+        def check_webcam_for_page(self):
+            """Prüft ob Webcam verfügbar ist und zeigt Pop-up falls nicht"""
+            if self.cap is None or not self.cap.isOpened():
+                # Erneut nach Webcam suchen mit Pop-up
+                camera_index = self.find_logitech_c920(show_popup=True)
+                if camera_index is not None:
+                    self.cap = cv2.VideoCapture(camera_index)
+
+        # FUNKTION: Startet den Webcam-Livestream
+        def start_webcam_stream(self, frame):
+            """Startet den Webcam-Livestream im gegebenen Frame"""
+            # Label für Webcam-Stream erstellen
+            self.webcam_label = tk.Label(frame, text="Webcam wird geladen...", 
+                                       font=("Arial", 14), bg="lightgray")
+            self.webcam_label.pack(expand=True, fill="both")
+            
+            # Webcam-Stream starten
+            self.update_webcam_stream()
+
+        # FUNKTION: Aktualisiert den Webcam-Stream kontinuierlich
+        def update_webcam_stream(self):
+            """Aktualisiert das Webcam-Bild kontinuierlich"""
+            if self.cap is not None and self.cap.isOpened():
+                ret, frame = self.cap.read()
+                if ret:
+                    # Frame für Display vorbereiten
+                    frame = cv2.flip(frame, 1)  # Horizontal spiegeln (Spiegel-Effekt)
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # Frame skalieren für bessere Darstellung
+                    height, width = frame_rgb.shape[:2]
+                    max_width, max_height = 640, 480
+                    
+                    # Seitenverhältnis beibehalten
+                    if width > max_width or height > max_height:
+                        scale = min(max_width/width, max_height/height)
+                        new_width = int(width * scale)
+                        new_height = int(height * scale)
+                        frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
+                    
+                    # In PhotoImage konvertieren
+                    img = Image.fromarray(frame_rgb)
+                    photo = ImageTk.PhotoImage(img)
+                    
+                    # Label aktualisieren
+                    if hasattr(self, 'webcam_label'):
+                        self.webcam_label.configure(image=photo, text="")
+                        self.webcam_label.image = photo  # Referenz behalten
+                else:
+                    # Fehler beim Lesen des Frames
+                    if hasattr(self, 'webcam_label'):
+                        self.webcam_label.configure(text="Webcam-Fehler", image="")
+            else:
+                # Webcam nicht verfügbar
+                if hasattr(self, 'webcam_label'):
+                    self.webcam_label.configure(text="Keine Webcam gefunden", image="")
+            
+            # Nächstes Update planen (ca. 30 FPS)
+            if hasattr(self, 'webcam_label'):
+                self.after(33, self.update_webcam_stream)
+
+        # FUNKTION: Stoppt den Webcam-Stream
+        def stop_webcam_stream(self):
+            """Stoppt den Webcam-Stream"""
+            if hasattr(self, 'webcam_label'):
+                self.webcam_label.destroy()
+                delattr(self, 'webcam_label')
+
+        # FUNKTION: Zeigt Pop-up an wenn Kamera nicht gefunden wurde
+        def show_camera_not_found_popup(self):
+            """Zeigt ein Pop-up an, wenn die Logitech C920 nicht gefunden wurde"""
+            popup = tk.Toplevel(self)
+            popup.title("Kamera nicht gefunden")
+            popup.geometry("300x150")
+            popup.resizable(False, False)
+            
+            # Pop-up zentrieren
+            popup.transient(self)
+            popup.grab_set()
+            
+            # Text anzeigen
+            message_label = tk.Label(popup, text="Logitech C920 nicht gefunden", 
+                                   font=("Arial", 12), pady=20)
+            message_label.pack()
+            
+            # OK Button
+            ok_button = tk.Button(popup, text="OK", command=popup.destroy, 
+                                width=10, pady=5)
+            ok_button.pack(pady=10)
+            
+            # Fokus auf Pop-up setzen
+            popup.focus_set()
+
+        # FUNKTION: Placeholder für Drucken-Funktion
+        def drucken(self):
+            """Placeholder für Drucken-Funktionalität"""
+            print("Drucken-Funktion aufgerufen")
 
 if __name__ == "__main__":
     app = App()
