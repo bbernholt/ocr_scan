@@ -3,10 +3,11 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import os
 import cv2
-import pytesseract
 import threading
 import openpyxl
 from pygrabber.dshow_graph import FilterGraph
+import pytesseract
+import re
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -21,13 +22,13 @@ class App(tk.Tk):
             self.geometry(f"{screen_width}x{screen_height//2}+0+0")
             
             # Maße des Logos
-            breite = 120   # frei wählbar
-            hoehe = 60     # frei wählbar
+            breite = 120
+            hoehe = 60
 
             # Logo laden und scalieren
             self.load_and_scale_logo(breite, hoehe)
 
-            # Maße der Bilder (Piktogramm für Wareneingang udn Ausgang) definieren
+            # Maße der Bilder (Piktogramm)
             breite = 450
             hoehe = 450
             
@@ -38,41 +39,34 @@ class App(tk.Tk):
             self.startseite = tk.Frame(self)
             self.wareneingang_seite = tk.Frame(self)
             self.warenausgang_seite = tk.Frame(self)
+
+             # Webcam suchen und initialisieren (in separatem Thread)
+            self.cap = None
+            threading.Thread(target=self.initialize_webcam, daemon=True).start()
+
+            # OCR-States (nur aktiv auf Wareneingang/-ausgang)
+            self.last_frame = None
+            self.ocr_results = []
+            self.stop_event = None
             
             # Artikel-Daten
-            self.artikel_dict_eingang = []    # Excel-Daten Wareneingang
-            self.artikel_dict_ausgang = []    # Excel-Daten Warenausgang
-            self.detected_articles_eingang = []       # Erkannte Artikel Wareneingang
-            self.detected_articles_ausgang = []       # Erkannte Artikel Warenausgang
+            self.artikel_dict_eingang = []           # Excel-Daten Wareneingang
+            self.artikel_dict_ausgang = []           # Excel-Daten Warenausgang
+            self.detected_articles_eingang = []      # (bleibt, falls später genutzt)
+            self.detected_articles_ausgang = []      # (bleibt, falls später genutzt)
 
-            # OCR-Konfiguration (HINZUFÜGEN)
-            self.ocr_active = False  # OCR ein/aus
-            self.last_ocr_text = ""  # Letzter erkannter Text
-            self.ocr_confidence_threshold = 60  # Mindest-Konfidenz für OCR
-            self.current_page = "startseite"  # Aktuelle Seite verfolgen
-
-            # Startseite aufbauen
+            # Seiten aufbauen
             self.build_startseite()
-            
-            # Wareneingang-Seite aufbauen
             self.build_wareneingang()
-            
-            # Warenausgang-Seite aufbauen
             self.build_warenausgang()
-            
-            # Startseite anzeigen
             self.show_startseite()
 
             # Webcam suchen und initialisieren (in separatem Thread)
             self.cap = None
             threading.Thread(target=self.initialize_webcam, daemon=True).start()
 
-            # Clean Exit
-            #self.protocol("WM_DELETE_WINDOW", self.on_close)
-
         #------------------------------------------------------- GUI ---------------------------------------------------------
 
-        # FUNKTION: Läd und skaliert die Wareneingang- und Warenausgang-Bilder
         def load_and_scale_images(self, breite, hoehe):
             """Lädt und skaliert die Wareneingang- und Warenausgang-Bilder"""
             try:
@@ -85,7 +79,6 @@ class App(tk.Tk):
             except Exception as e:
                 print(f"Fehler beim Laden der Bilder: {e}")
 
-        # FUNKTION: Läd und skaliert das Logo
         def load_and_scale_logo(self, breite, hoehe):
             """Lädt und skaliert das Logo"""
             try:
@@ -96,243 +89,143 @@ class App(tk.Tk):
             except Exception as e:
                 print(f"Fehler beim Laden des Logos: {e}")
 
-        # FUNKTION: Erstelle Layout der Startseite
         def build_startseite(self):
-            # Erstellt Button für Wareneingang
-            btn_eingang = tk.Button(
-                self.startseite, image=self.eingang_photo,
-                command=self.show_wareneingang, borderwidth=0
-            )
-            # Erstellt Button für Warenausgang
-            btn_ausgang = tk.Button(
-                self.startseite, image=self.ausgang_photo,
-                command=self.show_warenausgang, borderwidth=0
-            )
-            # Positioniert die Buttons
+            btn_eingang = tk.Button(self.startseite, image=self.eingang_photo,
+                                    command=self.show_wareneingang, borderwidth=0)
+            btn_ausgang = tk.Button(self.startseite, image=self.ausgang_photo,
+                                    command=self.show_warenausgang, borderwidth=0)
             btn_eingang.pack(side="left", expand=True, fill="both")
             btn_ausgang.pack(side="right", expand=True, fill="both")
-
-            # Fügt das Logo hinzu
             self.add_logo(self.startseite)
 
-        # FUNKTION: Zeige das Layout der Startseite an
         def show_startseite(self):
-            # Aktuelle Seite setzen
+            self.startseite.pack(expand=True, fill="both")
+            self.wareneingang_seite.pack_forget()
+            self.warenausgang_seite.pack_forget()
             self.current_page = "startseite"
-            
-            # OCR deaktivieren
-            self.ocr_active = False
-            print("Startseite: OCR deaktiviert")
-            
-            # Webcam-Stream stoppen falls aktiv
+            # OCR und Webcam auf Startseite stoppen
+            self.stop_ocr()
             self.stop_webcam_stream()
-            
-            self.wareneingang_seite.pack_forget()  # Versteckt die Wareneingang-Seite
-            self.warenausgang_seite.pack_forget()  # Versteckt die Warenausgang-Seite
-            self.startseite.pack(expand=True, fill="both")  # Zeigt die Startseite an
 
-        # FUNKTION: Fügt das Logo in das gegebene Frame ein
         def add_logo(self, parent_frame):
-            """Fügt unten rechts im gegebenen Frame das Logo ein"""
             logo_label = tk.Label(parent_frame, image=self.logo_photo, borderwidth=0)
-            logo_label.image = self.logo_photo  # Referenz behalten
+            logo_label.image = self.logo_photo
             logo_label.pack(side="right", anchor="se", padx=10, pady=10)
 
-        # FUNKTION: Erstelle Layout des Wareneingangs
         def build_wareneingang(self):
-            # Überschrift
             tk.Label(self.wareneingang_seite, text="Wareneingang", font=("Arial", 30)).pack(pady=20)
-
-            # Innerer Frame für linke und rechte Hälfte
             main_frame = tk.Frame(self.wareneingang_seite)
             main_frame.pack(expand=True, fill="both")
 
-            # Linke Hälfte
             left_frame = tk.Frame(main_frame)
             left_frame.pack(side="left", expand=True, fill="both", padx=20, pady=20)
 
-            # Dropdown für Excel-Dateien aus Eingang-Verzeichnis
             self.dropdown_var_eingang = tk.StringVar()
             self.dropdown_eingang = ttk.Combobox(left_frame, textvariable=self.dropdown_var_eingang, width=30)
-            # Initial laden
             excel_files_eingang = self.load_excel_files("../eingang")
             self.dropdown_eingang['values'] = excel_files_eingang
-            # Erste Datei automatisch auswählen und laden
             if excel_files_eingang:
                 self.dropdown_eingang.set(excel_files_eingang[0])
-                # Erste Datei automatisch laden
                 filepath = os.path.join("../eingang", excel_files_eingang[0])
                 self.load_excel_data(filepath, "eingang")
-            # Event-Binding für automatische Aktualisierung und Excel-Laden
             self.dropdown_eingang.bind('<Button-1>', self.refresh_dropdown_eingang)
             self.dropdown_eingang.bind('<<ComboboxSelected>>', self.on_excel_select_eingang)
             self.dropdown_eingang.pack(pady=10)
 
-            # Label "Erfasste Artikel"
             tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
-
-            # Tabelle für Artikel (bleibt leer bis Artikel erkannt werden)
             columns = ("artikelnummer", "menge", "karton", "beutel", "status")
             self.tree_eingang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
-
-            # Spaltenüberschriften setzen
             self.tree_eingang.heading("artikelnummer", text="Artikelnummer")
             self.tree_eingang.heading("menge", text="Menge")
             self.tree_eingang.heading("karton", text="Karton")
             self.tree_eingang.heading("beutel", text="Beutel")
             self.tree_eingang.heading("status", text="Status")
-
-            # Spaltenbreite
             self.tree_eingang.column("artikelnummer", width=120, anchor="center")
             self.tree_eingang.column("menge", width=80, anchor="center")
             self.tree_eingang.column("karton", width=80, anchor="center")
             self.tree_eingang.column("beutel", width=80, anchor="center")
             self.tree_eingang.column("status", width=80, anchor="center")
-
             self.tree_eingang.pack(expand=True, fill="both")
 
-            # Rechte Hälfte - Webcam-Bereich (GEÄNDERT: expand=False)
             self.right_frame_eingang = tk.Frame(main_frame, bg="black")
             self.right_frame_eingang.pack(side="right", expand=False, fill="y", padx=20, pady=20)
 
-            # Frame für Buttons unten
             button_frame = tk.Frame(self.wareneingang_seite)
             button_frame.pack(pady=10)
-
-            # "Drucken"-Button
             tk.Button(button_frame, text="Drucken").pack(side="left", padx=5)
-            # "Zurück"-Button
             tk.Button(button_frame, text="Zurück", command=self.show_startseite).pack(side="left", padx=5)
-
-            # add Logo
             self.add_logo(self.wareneingang_seite)
 
-        # FUNKTION: Wareneingang anzeigen
         def show_wareneingang(self):
-            # Aktuelle Seite setzen
             self.current_page = "eingang"
-            
-            # Navigation: Alle anderen Seiten ausblenden
-            self.startseite.pack_forget()           # Startseite verstecken
-            self.warenausgang_seite.pack_forget()   # Warenausgang-Seite verstecken
-            
-            # Wareneingang-Seite anzeigen und Layout füllen
+            self.startseite.pack_forget()
+            self.warenausgang_seite.pack_forget()
             self.wareneingang_seite.pack(expand=True, fill="both")
-            
-            # OCR immer aktiviert für Wareneingang
-            self.ocr_active = True
-            print("Wareneingang-Seite: OCR aktiviert für artikel_dict_eingang")
-            
-            # Webcam-Verfügbarkeit prüfen
             self.check_webcam_for_page()
-            
-            # Webcam-Stream starten
             self.start_webcam_stream(self.right_frame_eingang)
-            
-            # Tastatur-Shortcuts für Wareneingang-Seite definieren (GEÄNDERT: keine Leertaste)
-            self.bind("<Return>", lambda e: self.drucken())        # Enter-Taste → Drucken-Funktion
-            self.bind("<Escape>", lambda e: self.show_startseite()) # Escape-Taste → Zurück zur Startseite
+            self.start_ocr()  # OCR nur hier aktivieren
+            self.bind("<Return>", lambda e: self.drucken())
+            self.bind("<Escape>", lambda e: self.show_startseite())
 
-        # FUNKTION: Erstelle Layout des Warenausgangs
         def build_warenausgang(self):
-            # Überschrift
             tk.Label(self.warenausgang_seite, text="Warenausgang", font=("Arial", 30)).pack(pady=20)
-
-            # Innerer Frame für linke und rechte Hälfte
             main_frame = tk.Frame(self.warenausgang_seite)
             main_frame.pack(expand=True, fill="both")
 
-            # Linke Hälfte
             left_frame = tk.Frame(main_frame)
             left_frame.pack(side="left", expand=True, fill="both", padx=20, pady=20)
 
-            # Dropdown für Excel-Dateien aus Ausgang-Verzeichnis
             self.dropdown_var_ausgang = tk.StringVar()
             self.dropdown_ausgang = ttk.Combobox(left_frame, textvariable=self.dropdown_var_ausgang, width=30)
-            # Initial laden
             excel_files_ausgang = self.load_excel_files("../ausgang")
             self.dropdown_ausgang['values'] = excel_files_ausgang
-            # Erste Datei automatisch auswählen und laden
             if excel_files_ausgang:
                 self.dropdown_ausgang.set(excel_files_ausgang[0])
-                # Erste Datei automatisch laden
                 filepath = os.path.join("../ausgang", excel_files_ausgang[0])
                 self.load_excel_data(filepath, "ausgang")
-            # Event-Binding für automatische Aktualisierung und Excel-Laden
             self.dropdown_ausgang.bind('<Button-1>', self.refresh_dropdown_ausgang)
             self.dropdown_ausgang.bind('<<ComboboxSelected>>', self.on_excel_select_ausgang)
             self.dropdown_ausgang.pack(pady=10)
 
-            # Label "Erfasste Artikel"
             tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
-
-            # Tabelle für Artikel (bleibt leer bis Artikel erkannt werden)
             columns = ("artikelnummer", "menge", "karton", "beutel", "empfaenger", "status")
             self.tree_ausgang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
-
-            # Spaltenüberschriften setzen
             self.tree_ausgang.heading("artikelnummer", text="Artikelnummer")
             self.tree_ausgang.heading("menge", text="Menge")
             self.tree_ausgang.heading("karton", text="Karton")
             self.tree_ausgang.heading("beutel", text="Beutel")
             self.tree_ausgang.heading("empfaenger", text="Empfänger")
             self.tree_ausgang.heading("status", text="Status")
-
-            # Spaltenbreite
             self.tree_ausgang.column("artikelnummer", width=70, anchor="center")
             self.tree_ausgang.column("menge", width=70, anchor="center")
             self.tree_ausgang.column("karton", width=70, anchor="center")
             self.tree_ausgang.column("beutel", width=70, anchor="center")
             self.tree_ausgang.column("empfaenger", width=70, anchor="center")
             self.tree_ausgang.column("status", width=50, anchor="center")
-
             self.tree_ausgang.pack(expand=True, fill="both")
 
-            # Rechte Hälfte - Webcam-Bereich (GEÄNDERT: expand=False)
             self.right_frame_ausgang = tk.Frame(main_frame, bg="black")
             self.right_frame_ausgang.pack(side="right", expand=False, fill="y", padx=20, pady=20)
 
-            # Frame für Buttons unten
             button_frame = tk.Frame(self.warenausgang_seite)
             button_frame.pack(pady=10)
-
-            # "Drucken"-Button
             tk.Button(button_frame, text="Drucken").pack(side="left", padx=5)
-            # "Zurück"-Button
             tk.Button(button_frame, text="Zurück", command=self.show_startseite).pack(side="left", padx=5)
-
-            # add Logo
             self.add_logo(self.warenausgang_seite)
 
-        # FUNKTION: Warenausgang anzeigen
         def show_warenausgang(self):
-            # Aktuelle Seite setzen
             self.current_page = "ausgang"
-            
-            # Navigation: Alle anderen Seiten ausblenden  
-            self.startseite.pack_forget()         # Startseite verstecken
-            self.wareneingang_seite.pack_forget() # Wareneingang-Seite verstecken
-            
-            # Warenausgang-Seite anzeigen und Layout füllen
+            self.startseite.pack_forget()
+            self.wareneingang_seite.pack_forget()
             self.warenausgang_seite.pack(expand=True, fill="both")
-            
-            # OCR immer aktiviert für Warenausgang
-            self.ocr_active = True
-            print("Warenausgang-Seite: OCR aktiviert für artikel_dict_ausgang")
-            
-            # Webcam-Verfügbarkeit prüfen
             self.check_webcam_for_page()
-            
-            # Webcam-Stream starten
             self.start_webcam_stream(self.right_frame_ausgang)
-            
-            # Tastatur-Shortcuts für Warenausgang-Seite definieren (GEÄNDERT: keine Leertaste)
-            self.bind("<Return>", lambda e: self.drucken())        # Enter-Taste → Drucken-Funktion
-            self.bind("<Escape>", lambda e: self.show_startseite()) # Escape-Taste → Zurück zur Startseite
+            self.start_ocr()  # OCR nur hier aktivieren
+            self.bind("<Return>", lambda e: self.drucken())
+            self.bind("<Escape>", lambda e: self.show_startseite())
 
         #------------------------------------------------------- FUNKTIONALITÄT ---------------------------------------------------------
 
-        # FUNKTION: Lädt Excel-Dateien aus einem Verzeichnis
         def load_excel_files(self, directory):
             """Lädt alle Excel-Dateien aus dem angegebenen Verzeichnis"""
             excel_files = []
@@ -347,15 +240,12 @@ class App(tk.Tk):
                 print(f"Fehler beim Laden der Excel-Dateien: {e}")
             return excel_files
 
-        # FUNKTION: Lädt Excel-Datei und speichert Inhalt
         def load_excel_data(self, filepath, page_type="eingang"):
             """Lädt Excel-Datei und speichert Daten in artikel_dict"""
             try:
-                # Excel-Datei öffnen
                 workbook = openpyxl.load_workbook(filepath)
                 sheet = workbook.active
                 
-                # Spaltentitel aus Zeile 1 lesen
                 headers = []
                 for cell in sheet[1]:
                     if cell.value:
@@ -363,109 +253,80 @@ class App(tk.Tk):
                     else:
                         break
                 
-                # Datenzeilen ab Zeile 2 lesen
                 data_rows = []
                 for row in sheet.iter_rows(min_row=2, values_only=True):
-                    if any(row):  # Nur nicht-leere Zeilen
+                    if any(row):
                         row_dict = {}
                         for i, value in enumerate(row[:len(headers)]):
                             row_dict[headers[i]] = value if value is not None else ""
                         data_rows.append(row_dict)
                 
-                # Je nach Seite in entsprechende Variable speichern
                 if page_type == "eingang":
                     self.artikel_dict_eingang = data_rows
                     print(f"Wareneingang: {len(data_rows)} Artikel aus Excel geladen")
-                    print(f"Spaltentitel: {headers}")
-                    print("Erste 3 Datensätze:")
-                    for i, row in enumerate(data_rows[:3]):
-                        print(f"  Zeile {i+2}: {row}")
-                    if len(data_rows) > 3:
-                        print(f"  ... und {len(data_rows)-3} weitere Datensätze")
                 else:
                     self.artikel_dict_ausgang = data_rows
                     print(f"Warenausgang: {len(data_rows)} Artikel aus Excel geladen")
-                    print(f"Spaltentitel: {headers}")
-                    print("Erste 3 Datensätze:")
-                    for i, row in enumerate(data_rows[:3]):
-                        print(f"  Zeile {i+2}: {row}")
-                    if len(data_rows) > 3:
-                        print(f"  ... und {len(data_rows)-3} weitere Datensätze")
-                
-                print("-" * 50)  # Trennlinie für bessere Lesbarkeit
                 
                 workbook.close()
                 return data_rows
-                
             except Exception as e:
                 print(f"Fehler beim Laden der Excel-Datei: {e}")
                 return []
 
-        # FUNKTION: Aktualisiert Dropdown-Inhalte für Wareneingang
         def refresh_dropdown_eingang(self, event=None):
-            """Aktualisiert Dropdown-Inhalte beim Klicken - Wareneingang"""
             excel_files = self.load_excel_files("../eingang")
             self.dropdown_eingang['values'] = excel_files
 
-        # FUNKTION: Aktualisiert Dropdown-Inhalte für Warenausgang
         def refresh_dropdown_ausgang(self, event=None):
-            """Aktualisiert Dropdown-Inhalte beim Klicken - Warenausgang"""
             excel_files = self.load_excel_files("../ausgang")
             self.dropdown_ausgang['values'] = excel_files
 
-        # FUNKTION: Event-Handler für Dropdown-Auswahl Wareneingang
         def on_excel_select_eingang(self, event=None):
-            """Wird aufgerufen wenn Excel-Datei im Wareneingang ausgewählt wird"""
             selected_file = self.dropdown_var_eingang.get()
             if selected_file:
                 filepath = os.path.join("../eingang", selected_file)
                 self.load_excel_data(filepath, "eingang")
-                # KEINE Tabellen-Aktualisierung!
 
-        # FUNKTION: Event-Handler für Dropdown-Auswahl Warenausgang
         def on_excel_select_ausgang(self, event=None):
-            """Wird aufgerufen wenn Excel-Datei im Warenausgang ausgewählt wird"""
             selected_file = self.dropdown_var_ausgang.get()
             if selected_file:
                 filepath = os.path.join("../ausgang", selected_file)
                 self.load_excel_data(filepath, "ausgang")
-                # KEINE Tabellen-Aktualisierung!
 
-        # FUNKTION: Sucht nach der Logitech C920 Webcam
         def find_logitech_c920(self, show_popup=False):
             """Sucht nach der Logitech C920 Webcam über den Gerätenamen"""
             try:
-                # FilterGraph verwenden um alle verfügbaren Kameras zu finden
                 graph = FilterGraph()
                 devices = graph.get_input_devices()
                 print(f"Gefundene Geräte: {devices}")
-                
-                # Nach Logitech C920 suchen
                 for device_index, device_name in enumerate(devices):
                     if "c920" in device_name.lower():
                         print(f"Logitech C920 gefunden: {device_name} (Index: {device_index})")
                         return device_index
-                
-                # Wenn nicht gefunden und Pop-up erwünscht
                 if show_popup:
                     self.show_camera_not_found_popup()
                 return None
-                
             except Exception as e:
                 print(f"Fehler beim Suchen der Webcam: {e}")
                 if show_popup:
                     self.show_camera_not_found_popup()
                 return None
 
-        # FUNKTION: Webcam initialisieren
         def initialize_webcam(self):
-            """Initialisiert die Webcam falls gefunden"""
-            camera_index = self.find_logitech_c920(show_popup=False)  # Kein Pop-up beim Start
+            """Initialisiert die Webcam mit niedriger Latenz"""
+            camera_index = self.find_logitech_c920(show_popup=False)
             if camera_index is not None:
                 try:
                     self.cap = cv2.VideoCapture(camera_index)
                     if self.cap.isOpened():
-                        print(f"Webcam erfolgreich initialisiert (Index: {camera_index})")
+                        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                        self.cap.set(cv2.CAP_PROP_FPS, 30)
+                        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+                        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                        print("Webcam initialisiert (640x480 @ 30 FPS)")
                         return True
                     else:
                         print("Webcam konnte nicht geöffnet werden")
@@ -475,332 +336,157 @@ class App(tk.Tk):
                     return False
             return False
 
-        # FUNKTION: Prüft Webcam-Verfügbarkeit für Wareneingang/Warenausgang
         def check_webcam_for_page(self):
             """Prüft ob Webcam verfügbar ist und zeigt Pop-up falls nicht"""
             if self.cap is None or not self.cap.isOpened():
-                # Erneut nach Webcam suchen mit Pop-up
                 camera_index = self.find_logitech_c920(show_popup=True)
                 if camera_index is not None:
                     self.cap = cv2.VideoCapture(camera_index)
 
-        # FUNKTION: Startet den Webcam-Livestream
         def start_webcam_stream(self, frame):
             """Startet den Webcam-Livestream im gegebenen Frame"""
-            # Label für Webcam-Stream erstellen
-            self.webcam_label = tk.Label(frame, text="Webcam wird geladen...", 
-                                       font=("Arial", 14), bg="lightgray")
+            self.webcam_label = tk.Label(frame, text="Webcam wird geladen...",
+                                         font=("Arial", 14), bg="lightgray")
             self.webcam_label.pack(expand=True, fill="both")
-            
-            # Webcam-Stream starten
             self.update_webcam_stream()
 
-        # FUNKTION: Aktualisiert den Webcam-Stream kontinuierlich
         def update_webcam_stream(self):
             """Aktualisiert das Webcam-Bild kontinuierlich"""
             if self.cap is not None and self.cap.isOpened():
                 ret, frame = self.cap.read()
                 if ret:
-                    # Frame für Display vorbereiten
-                    frame = cv2.flip(frame, 1)  # Horizontal spiegeln (Spiegel-Effekt)
+                    # Frame für OCR bereitstellen
+                    self.last_frame = frame.copy()
+
+                    # OCR-Boxen (rot) zeichnen, falls vorhanden
+                    for box in self.ocr_results:
+                        x, y, w, h = box['left'], box['top'], box['width'], box['height']
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                        cv2.putText(frame, box['text'], (x, max(0, y - 5)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # Frame skalieren für bessere Darstellung
-                    height, width = frame_rgb.shape[:2]
-                    max_width, max_height = 640, 480
-                    
-                    # Seitenverhältnis beibehalten
-                    if width > max_width or height > max_height:
-                        scale = min(max_width/width, max_height/height)
-                        new_width = int(width * scale)
-                        new_height = int(height * scale)
-                        frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
-                    
-                    # In PhotoImage konvertieren
-                    img = Image.fromarray(frame_rgb)
-                    photo = ImageTk.PhotoImage(img)
-                    
-                    # Label aktualisieren
-                    if hasattr(self, 'webcam_label'):
-                        self.webcam_label.configure(image=photo, text="")
-                        self.webcam_label.image = photo  # Referenz behalten
-                else:
-                    # Fehler beim Lesen des Frames
-                    if hasattr(self, 'webcam_label'):
-                        self.webcam_label.configure(text="Webcam-Fehler", image="")
+            self.last_frame = frame.copy()
+
+            # OCR-Boxen (rot) zeichnen, falls vorhanden
+            for box in self.ocr_results:
+                x, y, w, h = box['left'], box['top'], box['width'], box['height']
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                cv2.putText(frame, box['text'], (x, max(0, y - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            display_frame = cv2.resize(frame_rgb, (640, 480))
+            img = Image.fromarray(display_frame)
+            photo = ImageTk.PhotoImage(img)
+            if hasattr(self, 'webcam_label'):
+                self.webcam_label.configure(image=photo, text="")
+                self.webcam_label.image = photo
             else:
-                # Webcam nicht verfügbar
                 if hasattr(self, 'webcam_label'):
-                    self.webcam_label.configure(text="Keine Webcam gefunden", image="")
-            
-            # Nächstes Update planen (ca. 30 FPS)
+                    self.webcam_label.configure(text="Webcam-Fehler", image="")
+                else:
+                    if hasattr(self, 'webcam_label'):
+                        self.webcam_label.configure(text="Keine Webcam gefunden", image="")
+
             if hasattr(self, 'webcam_label'):
                 self.after(33, self.update_webcam_stream)
 
-        # FUNKTION: Stoppt den Webcam-Stream
         def stop_webcam_stream(self):
             """Stoppt den Webcam-Stream"""
             if hasattr(self, 'webcam_label'):
                 self.webcam_label.destroy()
                 delattr(self, 'webcam_label')
 
-        # FUNKTION: Zeigt Pop-up an wenn Kamera nicht gefunden wurde
         def show_camera_not_found_popup(self):
             """Zeigt ein Pop-up an, wenn die Logitech C920 nicht gefunden wurde"""
             popup = tk.Toplevel(self)
             popup.title("Kamera nicht gefunden")
             popup.geometry("300x150")
             popup.resizable(False, False)
-            
-            # Pop-up zentrieren
             popup.transient(self)
             popup.grab_set()
-            
-            # Text anzeigen
-            message_label = tk.Label(popup, text="Logitech C920 nicht gefunden", 
+            message_label = tk.Label(popup, text="Logitech C920 nicht gefunden",
                                    font=("Arial", 12), pady=20)
             message_label.pack()
-            
-            # OK Button
-            ok_button = tk.Button(popup, text="OK", command=popup.destroy, 
+            ok_button = tk.Button(popup, text="OK", command=popup.destroy,
                                 width=10, pady=5)
             ok_button.pack(pady=10)
-            
-            # Fokus auf Pop-up setzen
             popup.focus_set()
 
-        # FUNKTION: OCR-Konfiguration für Artikelnummern (HINZUFÜGEN)
-        def configure_ocr(self):
-            """Konfiguriert Tesseract für optimale Artikelnummer-Erkennung"""
-            custom_config = r'--oem 3 --psm 8 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-            return custom_config
-
-        # FUNKTION: Bildvorverarbeitung für bessere OCR (HINZUFÜGEN)
-        def preprocess_for_ocr(self, frame):
-            """Verarbeitet das Bild für optimale OCR-Erkennung"""
-            # In Graustufen konvertieren
-            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            
-            # Kontrast erhöhen (CLAHE)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            gray = clahe.apply(gray)
-            
-            # Gaussianisches Glätten zur Rauschreduzierung
-            gray = cv2.GaussianBlur(gray, (3, 3), 0)
-            
-            # Binarisierung - Schwarz/Weiß (automatischer Threshold)
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
-            # Morphologische Operationen zur Verbesserung
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-            
-            # Bild vergrößern für bessere OCR (2x)
-            binary = cv2.resize(binary, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-            
-            return binary
-        
-        # FUNKTION: OCR auf Webcam-Frame anwenden (HINZUFÜGEN)
-        def perform_ocr_on_frame(self, frame):
-            """Führt OCR auf dem aktuellen Webcam-Frame aus"""
-            if not self.ocr_active:
-                return None
-                
-            try:
-                # ROI (Region of Interest) definieren - mittlerer Bereich des Bildes
-                height, width = frame.shape[:2]
-                roi_x = width // 4
-                roi_y = height // 4
-                roi_width = width // 2
-                roi_height = height // 2
-                
-                # ROI extrahieren
-                roi = frame[roi_y:roi_y+roi_height, roi_x:roi_x+roi_width]
-                
-                # Bildvorverarbeitung für OCR
-                processed_roi = self.preprocess_for_ocr(roi)
-                
-                # OCR durchführen mit Konfidenz-Daten
-                ocr_config = self.configure_ocr()
-                data = pytesseract.image_to_data(processed_roi, config=ocr_config, output_type=pytesseract.Output.DICT)
-                
-                # Erkannte Texte mit hoher Konfidenz sammeln
-                detected_texts = []
-                for i, conf in enumerate(data['conf']):
-                    if int(conf) > self.ocr_confidence_threshold:
-                        text = data['text'][i].strip()
-                        if len(text) > 2:  # Mindestens 3 Zeichen
-                            detected_texts.append((text, conf))
-                
-                # Besten Text auswählen (höchste Konfidenz)
-                if detected_texts:
-                    best_text = max(detected_texts, key=lambda x: x[1])
-                    return best_text[0], roi_x, roi_y, roi_width, roi_height
-                
-            except Exception as e:
-                print(f"OCR-Fehler: {e}")
-            
-            return None
-
-        # FUNKTION: Prüft ob erkannter Text eine Artikelnummer ist (HINZUFÜGEN)
-        def validate_article_number(self, text):
-            """Prüft ob erkannter Text in der Excel-Liste der aktuellen Seite vorhanden ist"""
-            # Je nach aktueller Seite die richtige artikel_dict verwenden
-            if self.current_page == "eingang":
-                article_list = self.artikel_dict_eingang
-                print(f"OCR-Vergleich mit Wareneingang-Daten ({len(article_list)} Artikel)")
-            elif self.current_page == "ausgang":
-                article_list = self.artikel_dict_ausgang
-                print(f"OCR-Vergleich mit Warenausgang-Daten ({len(article_list)} Artikel)")
-            else:
-                return None
-            
-            # In Excel-Daten nach Artikelnummer suchen
-            for article in article_list:
-                if 'Artikelnummer' in article:
-                    if str(article['Artikelnummer']).strip().upper() == text.upper():
-                        print(f"Artikelnummer gefunden: {text}")
-                        return article
-            
-            print(f"Artikelnummer nicht gefunden: {text}")
-            return None
-
-        # FUNKTION: Fügt erkannten Artikel zur Tabelle hinzu (HINZUFÜGEN)
-        def add_detected_article(self, article_data):
-            """Fügt erkannten Artikel zur entsprechenden Tabelle hinzu"""
-            if self.current_page == "eingang":
-                tree = self.tree_eingang
-                detected_list = self.detected_articles_eingang
-            elif self.current_page == "ausgang":
-                tree = self.tree_ausgang
-                detected_list = self.detected_articles_ausgang
-            else:
+        # --- OCR-Lebenszyklus ---
+        def start_ocr(self):
+            """Startet die einfache Vollbild-OCR nur auf Eingangs-/Ausgangsseiten."""
+            if self.current_page not in ("eingang", "ausgang"):
                 return
-            
-            # Prüfen ob Artikel bereits erkannt wurde
-            article_number = article_data.get('Artikelnummer', '')
-            for detected in detected_list:
-                if detected.get('Artikelnummer') == article_number:
-                    print(f"Artikel {article_number} bereits erfasst")
-                    return
-            
-            # Artikel zur Liste hinzufügen
-            detected_list.append(article_data)
-            
-            # Zur Tabelle hinzufügen
-            if self.current_page == "eingang":
-                values = (
-                    article_data.get("Artikelnummer", ""),
-                    article_data.get("Menge", ""),
-                    article_data.get("Karton", ""),
-                    article_data.get("Beutel", ""),
-                    "Erkannt"
-                )
-            else:  # ausgang
-                values = (
-                    article_data.get("Artikelnummer", ""),
-                    article_data.get("Menge", ""),
-                    article_data.get("Karton", ""),
-                    article_data.get("Beutel", ""),
-                    article_data.get("Empfaenger", ""),
-                    "Erkannt"
-                )
-            
-            tree.insert("", "end", values=values)
-            print(f"Artikel erkannt und hinzugefügt: {article_number}")
+            if self.stop_event and not self.stop_event.is_set():
+                return  # schon aktiv
+            self.stop_event = threading.Event()
+            threading.Thread(target=self.ocr_loop, daemon=True).start()
 
-        # FUNKTION: Aktualisiert den Webcam-Stream kontinuierlich (ERWEITERT)
-        def update_webcam_stream(self):
-            """Aktualisiert das Webcam-Bild kontinuierlich mit OCR"""
-            if self.cap is not None and self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if ret:
-                    # Frame für Display vorbereiten
-                    frame = cv2.flip(frame, 1)  # Horizontal spiegeln (Spiegel-Effekt)
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # OCR durchführen (falls aktiv)
-                    ocr_result = self.perform_ocr_on_frame(frame_rgb)
-                    
-                    # ROI-Rahmen zeichnen und OCR-Ergebnis anzeigen
-                    if self.ocr_active:
-                        height, width = frame_rgb.shape[:2]
-                        roi_x = width // 4
-                        roi_y = height // 4
-                        roi_width = width // 2
-                        roi_height = height // 2
-                        
-                        # ROI-Rahmen zeichnen (grün)
-                        cv2.rectangle(frame_rgb, (roi_x, roi_y), 
-                                    (roi_x + roi_width, roi_y + roi_height), (0, 255, 0), 2)
-                        
-                        # OCR-Text anzeigen falls erkannt
-                        if ocr_result:
-                            detected_text = ocr_result[0]
-                            # Text oberhalb der ROI anzeigen
-                            cv2.putText(frame_rgb, f"Erkannt: {detected_text}", 
-                                      (roi_x, roi_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 
-                                      0.7, (0, 255, 0), 2)
-                            
-                            # Validierung und Hinzufügung zur Tabelle
-                            article_data = self.validate_article_number(detected_text)
-                            if article_data:
-                                self.add_detected_article(article_data)
-                    
-                    # Frame skalieren für bessere Darstellung
-                    height, width = frame_rgb.shape[:2]
-                    max_width, max_height = 640, 480
-                    
-                    # Seitenverhältnis beibehalten
-                    if width > max_width or height > max_height:
-                        scale = min(max_width/width, max_height/height)
-                        new_width = int(width * scale)
-                        new_height = int(height * scale)
-                        frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
-                    
-                    # In PhotoImage konvertieren
-                    img = Image.fromarray(frame_rgb)
-                    photo = ImageTk.PhotoImage(img)
-                    
-                    # Label aktualisieren
-                    if hasattr(self, 'webcam_label'):
-                        self.webcam_label.configure(image=photo, text="")
-                        self.webcam_label.image = photo  # Referenz behalten
-                else:
-                    # Fehler beim Lesen des Frames
-                    if hasattr(self, 'webcam_label'):
-                        self.webcam_label.configure(text="Webcam-Fehler", image="")
-            else:
-                # Webcam nicht verfügbar
-                if hasattr(self, 'webcam_label'):
-                    self.webcam_label.configure(text="Keine Webcam gefunden", image="")
-            
-            # Nächstes Update planen (ca. 30 FPS)
-            if hasattr(self, 'webcam_label'):
-                self.after(33, self.update_webcam_stream)
+        def stop_ocr(self):
+            """Stoppt die OCR (falls aktiv)."""
+            if self.stop_event:
+                try:
+                    self.stop_event.set()
+                except Exception:
+                    pass
+                self.stop_event = None
+            self.ocr_results = []
 
-        # FUNKTION: Placeholder für Drucken-Funktion
+        def ocr_loop(self):
+            """Einfache Vollbild-OCR (A-Z, 0-9) mit Bounding-Boxes."""
+            config = '--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            conf_threshold = 50
+            while self.stop_event and not self.stop_event.is_set():
+                frame = self.last_frame
+                if frame is None or self.current_page not in ("eingang", "ausgang"):
+                    threading.Event().wait(0.2)
+                    continue
+                try:
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    data = pytesseract.image_to_data(rgb, config=config, output_type=pytesseract.Output.DICT)
+
+                    boxes = []
+                    texts = []
+                    n = len(data.get('text', []))
+                    for i in range(n):
+                        text = (data['text'][i] or '').strip().upper()
+                        if not text or not re.fullmatch(r'[A-Z0-9]+', text):
+                            continue
+                        try:
+                            conf = int(float(data['conf'][i]))
+                        except ValueError:
+                            conf = -1
+                        if conf < conf_threshold:
+                            continue
+
+                        left = int(data['left'][i]); top = int(data['top'][i])
+                        width = int(data['width'][i]); height = int(data['height'][i])
+                        boxes.append({'text': text, 'left': left, 'top': top, 'width': width, 'height': height})
+                        texts.append(text)
+
+                    self.ocr_results = boxes
+                    if texts:
+                        print("Erkannt:", ", ".join(sorted(set(texts))))
+
+                    threading.Event().wait(0.5)
+                except Exception as e:
+                    print(f"OCR-Fehler: {e}")
+                    threading.Event().wait(0.5)
+
+        # ---------------------------------------- Platzhalter-Funktionen ----------------------------------------
+
         def drucken(self):
             """Placeholder für Drucken-Funktionalität"""
             print("Drucken-Funktion aufgerufen")
 
-        # FUNKTION: Placeholder für Find Printer-Funktion
         def find_printer(self):
             """Placeholder für Find Printer-Funktionalität"""
             print("Find Printer-Funktion aufgerufen")
 
+
 if __name__ == "__main__":
-    print("=== HIGH PERFORMANCE HARDWARE MODE ===")
-    print("Optimiert für: Desktop PCs, Laptops, leistungsstarke Hardware")
-    print("Einstellungen:")
-    print("- Webcam-Auflösung: 640x480 @ 30 FPS")
-    print("- Display-Größe: 640x480")
-    print("- OCR-Rate: ~2x pro Sekunde")
-    print("- Erweiterte Bildverarbeitung (CLAHE, Gaussian Blur, Otsu)")
-    print("- Volle UI-Update-Rate (30 FPS)")
-    print("- 2x Bildvergrößerung für OCR")
-    print("- Höhere Konfidenz-Schwelle (60%)")
-    print("==========================================")
+    print("=== WEBCAM-ANSICHT MIT EINFACHER VOLLBILD-OCR (A-Z,0-9) ===")
     app = App()
-    #app.test()
     app.mainloop()
