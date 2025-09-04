@@ -6,6 +6,7 @@ import cv2
 import pytesseract
 import threading
 import openpyxl
+import time
 from pygrabber.dshow_graph import FilterGraph
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -45,11 +46,15 @@ class App(tk.Tk):
             self.detected_articles_eingang = []       # Erkannte Artikel Wareneingang
             self.detected_articles_ausgang = []       # Erkannte Artikel Warenausgang
 
-            # OCR-Konfiguration (HINZUFÜGEN)
-            self.ocr_active = False  # OCR ein/aus
-            self.last_ocr_text = ""  # Letzter erkannter Text
-            self.ocr_confidence_threshold = 60  # Mindest-Konfidenz für OCR
-            self.current_page = "startseite"  # Aktuelle Seite verfolgen
+            # OCR-Performance-Einstellungen für schwächere Hardware (OPTIMIERT)
+            self.ocr_active = False
+            self.last_ocr_text = ""
+            self.ocr_confidence_threshold = 50  # Niedrigere Schwelle für bessere Erkennung
+            self.current_page = "startseite"
+            self.ocr_frame_skip = 15  # OCR nur jeden 15. Frame (ca. 1x pro Sekunde bei 15 FPS)
+            self.frame_counter = 0    # Frame-Zähler
+            self.last_detection_time = 0  # Letzte Erkennung (Debouncing)
+            self.min_detection_interval = 3.0  # Mindestens 3 Sekunden zwischen Erkennungen
 
             # Startseite aufbauen
             self.build_startseite()
@@ -66,9 +71,6 @@ class App(tk.Tk):
             # Webcam suchen und initialisieren (in separatem Thread)
             self.cap = None
             threading.Thread(target=self.initialize_webcam, daemon=True).start()
-
-            # Clean Exit
-            #self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         #------------------------------------------------------- GUI ---------------------------------------------------------
 
@@ -221,7 +223,7 @@ class App(tk.Tk):
             
             # OCR immer aktiviert für Wareneingang
             self.ocr_active = True
-            print("Wareneingang-Seite: OCR aktiviert für artikel_dict_eingang")
+            print("Wareneingang-Seite: OCR aktiviert für artikel_dict_eingang (Low Performance Mode)")
             
             # Webcam-Verfügbarkeit prüfen
             self.check_webcam_for_page()
@@ -318,7 +320,7 @@ class App(tk.Tk):
             
             # OCR immer aktiviert für Warenausgang
             self.ocr_active = True
-            print("Warenausgang-Seite: OCR aktiviert für artikel_dict_ausgang")
+            print("Warenausgang-Seite: OCR aktiviert für artikel_dict_ausgang (Low Performance Mode)")
             
             # Webcam-Verfügbarkeit prüfen
             self.check_webcam_for_page()
@@ -420,7 +422,6 @@ class App(tk.Tk):
             if selected_file:
                 filepath = os.path.join("../eingang", selected_file)
                 self.load_excel_data(filepath, "eingang")
-                # KEINE Tabellen-Aktualisierung!
 
         # FUNKTION: Event-Handler für Dropdown-Auswahl Warenausgang
         def on_excel_select_ausgang(self, event=None):
@@ -429,7 +430,6 @@ class App(tk.Tk):
             if selected_file:
                 filepath = os.path.join("../ausgang", selected_file)
                 self.load_excel_data(filepath, "ausgang")
-                # KEINE Tabellen-Aktualisierung!
 
         # FUNKTION: Sucht nach der Logitech C920 Webcam
         def find_logitech_c920(self, show_popup=False):
@@ -457,15 +457,19 @@ class App(tk.Tk):
                     self.show_camera_not_found_popup()
                 return None
 
-        # FUNKTION: Webcam initialisieren
+        # FUNKTION: Webcam initialisieren (OPTIMIERT für Low Performance)
         def initialize_webcam(self):
-            """Initialisiert die Webcam falls gefunden"""
-            camera_index = self.find_logitech_c920(show_popup=False)  # Kein Pop-up beim Start
+            """Webcam mit reduzierter Auflösung für bessere Performance"""
+            camera_index = self.find_logitech_c920(show_popup=False)
             if camera_index is not None:
                 try:
                     self.cap = cv2.VideoCapture(camera_index)
                     if self.cap.isOpened():
-                        print(f"Webcam erfolgreich initialisiert (Index: {camera_index})")
+                        # Reduzierte Auflösung für bessere Performance
+                        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)   # Reduziert von 640
+                        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)  # Reduziert von 480
+                        self.cap.set(cv2.CAP_PROP_FPS, 15)            # Reduzierte FPS von 30
+                        print(f"Webcam mit reduzierter Auflösung initialisiert (Index: {camera_index}) - Low Performance Mode")
                         return True
                     else:
                         print("Webcam konnte nicht geöffnet werden")
@@ -495,154 +499,74 @@ class App(tk.Tk):
             # Webcam-Stream starten
             self.update_webcam_stream()
 
-        # FUNKTION: Aktualisiert den Webcam-Stream kontinuierlich
-        def update_webcam_stream(self):
-            """Aktualisiert das Webcam-Bild kontinuierlich"""
-            if self.cap is not None and self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if ret:
-                    # Frame für Display vorbereiten
-                    frame = cv2.flip(frame, 1)  # Horizontal spiegeln (Spiegel-Effekt)
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # Frame skalieren für bessere Darstellung
-                    height, width = frame_rgb.shape[:2]
-                    max_width, max_height = 640, 480
-                    
-                    # Seitenverhältnis beibehalten
-                    if width > max_width or height > max_height:
-                        scale = min(max_width/width, max_height/height)
-                        new_width = int(width * scale)
-                        new_height = int(height * scale)
-                        frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
-                    
-                    # In PhotoImage konvertieren
-                    img = Image.fromarray(frame_rgb)
-                    photo = ImageTk.PhotoImage(img)
-                    
-                    # Label aktualisieren
-                    if hasattr(self, 'webcam_label'):
-                        self.webcam_label.configure(image=photo, text="")
-                        self.webcam_label.image = photo  # Referenz behalten
-                else:
-                    # Fehler beim Lesen des Frames
-                    if hasattr(self, 'webcam_label'):
-                        self.webcam_label.configure(text="Webcam-Fehler", image="")
-            else:
-                # Webcam nicht verfügbar
-                if hasattr(self, 'webcam_label'):
-                    self.webcam_label.configure(text="Keine Webcam gefunden", image="")
-            
-            # Nächstes Update planen (ca. 30 FPS)
-            if hasattr(self, 'webcam_label'):
-                self.after(33, self.update_webcam_stream)
-
-        # FUNKTION: Stoppt den Webcam-Stream
-        def stop_webcam_stream(self):
-            """Stoppt den Webcam-Stream"""
-            if hasattr(self, 'webcam_label'):
-                self.webcam_label.destroy()
-                delattr(self, 'webcam_label')
-
-        # FUNKTION: Zeigt Pop-up an wenn Kamera nicht gefunden wurde
-        def show_camera_not_found_popup(self):
-            """Zeigt ein Pop-up an, wenn die Logitech C920 nicht gefunden wurde"""
-            popup = tk.Toplevel(self)
-            popup.title("Kamera nicht gefunden")
-            popup.geometry("300x150")
-            popup.resizable(False, False)
-            
-            # Pop-up zentrieren
-            popup.transient(self)
-            popup.grab_set()
-            
-            # Text anzeigen
-            message_label = tk.Label(popup, text="Logitech C920 nicht gefunden", 
-                                   font=("Arial", 12), pady=20)
-            message_label.pack()
-            
-            # OK Button
-            ok_button = tk.Button(popup, text="OK", command=popup.destroy, 
-                                width=10, pady=5)
-            ok_button.pack(pady=10)
-            
-            # Fokus auf Pop-up setzen
-            popup.focus_set()
-
-        # FUNKTION: OCR-Konfiguration für Artikelnummern (HINZUFÜGEN)
-        def configure_ocr(self):
-            """Konfiguriert Tesseract für optimale Artikelnummer-Erkennung"""
-            custom_config = r'--oem 3 --psm 8 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-            return custom_config
-
-        # FUNKTION: Bildvorverarbeitung für bessere OCR (HINZUFÜGEN)
+        # FUNKTION: Einfachere Bildvorverarbeitung (OPTIMIERT)
         def preprocess_for_ocr(self, frame):
-            """Verarbeitet das Bild für optimale OCR-Erkennung"""
+            """Vereinfachte Bildverarbeitung für bessere Performance"""
             # In Graustufen konvertieren
             gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
             
-            # Kontrast erhöhen (CLAHE)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            gray = clahe.apply(gray)
+            # Einfache Binarisierung (statt CLAHE + Gaussian + Otsu)
+            _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
             
-            # Gaussianisches Glätten zur Rauschreduzierung
-            gray = cv2.GaussianBlur(gray, (3, 3), 0)
-            
-            # Binarisierung - Schwarz/Weiß (automatischer Threshold)
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
-            # Morphologische Operationen zur Verbesserung
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-            
-            # Bild vergrößern für bessere OCR (2x)
-            binary = cv2.resize(binary, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+            # Nur 1.3x Vergrößerung statt 2x
+            binary = cv2.resize(binary, None, fx=1.3, fy=1.3, interpolation=cv2.INTER_LINEAR)
             
             return binary
-        
-        # FUNKTION: OCR auf Webcam-Frame anwenden (HINZUFÜGEN)
+
+        # FUNKTION: OCR-Konfiguration optimiert (OPTIMIERT)
+        def configure_ocr(self):
+            """Schnellere OCR-Konfiguration für schwächere Hardware"""
+            # PSM 7 (Textzeile) ist schneller als PSM 8 (einzelnes Wort)
+            # OEM 1 (Legacy) ist oft schneller als OEM 3 (LSTM)
+            custom_config = r'--oem 1 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            return custom_config
+
+        # FUNKTION: OCR mit Debouncing und Frame-Skipping (OPTIMIERT)
         def perform_ocr_on_frame(self, frame):
-            """Führt OCR auf dem aktuellen Webcam-Frame aus"""
+            """OCR mit Performance-Optimierungen für schwächere Hardware"""
             if not self.ocr_active:
+                return None
+            
+            # Frame-Skipping: OCR nur jeden X. Frame
+            self.frame_counter += 1
+            if self.frame_counter % self.ocr_frame_skip != 0:
+                return None
+            
+            # Debouncing: Mindestens X Sekunden zwischen Erkennungen
+            current_time = time.time()
+            if current_time - self.last_detection_time < self.min_detection_interval:
                 return None
                 
             try:
-                # ROI (Region of Interest) definieren - mittlerer Bereich des Bildes
+                # Kleinere ROI für bessere Performance
                 height, width = frame.shape[:2]
-                roi_x = width // 4
-                roi_y = height // 4
-                roi_width = width // 2
-                roi_height = height // 2
+                roi_x = width // 3
+                roi_y = height // 3
+                roi_width = width // 3  # Kleinere ROI
+                roi_height = height // 3
                 
                 # ROI extrahieren
                 roi = frame[roi_y:roi_y+roi_height, roi_x:roi_x+roi_width]
                 
-                # Bildvorverarbeitung für OCR
+                # Vereinfachte Bildvorverarbeitung
                 processed_roi = self.preprocess_for_ocr(roi)
                 
-                # OCR durchführen mit Konfidenz-Daten
+                # OCR durchführen (vereinfacht)
                 ocr_config = self.configure_ocr()
-                data = pytesseract.image_to_data(processed_roi, config=ocr_config, output_type=pytesseract.Output.DICT)
+                text = pytesseract.image_to_string(processed_roi, config=ocr_config).strip()
                 
-                # Erkannte Texte mit hoher Konfidenz sammeln
-                detected_texts = []
-                for i, conf in enumerate(data['conf']):
-                    if int(conf) > self.ocr_confidence_threshold:
-                        text = data['text'][i].strip()
-                        if len(text) > 2:  # Mindestens 3 Zeichen
-                            detected_texts.append((text, conf))
-                
-                # Besten Text auswählen (höchste Konfidenz)
-                if detected_texts:
-                    best_text = max(detected_texts, key=lambda x: x[1])
-                    return best_text[0], roi_x, roi_y, roi_width, roi_height
+                # Einfache Textvalidierung
+                if len(text) > 2 and text.replace(' ', '').isalnum():  # Alphanumerisch (Leerzeichen erlaubt)
+                    self.last_detection_time = current_time
+                    print(f"OCR erkannt: '{text}' (Konfidenz: optimiert für Performance)")
+                    return text, roi_x, roi_y, roi_width, roi_height
                 
             except Exception as e:
                 print(f"OCR-Fehler: {e}")
             
             return None
 
-        # FUNKTION: Prüft ob erkannter Text eine Artikelnummer ist (HINZUFÜGEN)
+        # FUNKTION: Prüft ob erkannter Text eine Artikelnummer ist
         def validate_article_number(self, text):
             """Prüft ob erkannter Text in der Excel-Liste der aktuellen Seite vorhanden ist"""
             # Je nach aktueller Seite die richtige artikel_dict verwenden
@@ -655,17 +579,20 @@ class App(tk.Tk):
             else:
                 return None
             
-            # In Excel-Daten nach Artikelnummer suchen
+            # In Excel-Daten nach Artikelnummer suchen (erweiterte Suche)
+            text_clean = text.replace(' ', '').upper()  # Leerzeichen entfernen und großschreiben
+            
             for article in article_list:
                 if 'Artikelnummer' in article:
-                    if str(article['Artikelnummer']).strip().upper() == text.upper():
-                        print(f"Artikelnummer gefunden: {text}")
+                    article_number = str(article['Artikelnummer']).replace(' ', '').upper()
+                    if article_number == text_clean:
+                        print(f"Artikelnummer gefunden: {text} -> {article['Artikelnummer']}")
                         return article
             
             print(f"Artikelnummer nicht gefunden: {text}")
             return None
 
-        # FUNKTION: Fügt erkannten Artikel zur Tabelle hinzu (HINZUFÜGEN)
+        # FUNKTION: Fügt erkannten Artikel zur Tabelle hinzu
         def add_detected_article(self, article_data):
             """Fügt erkannten Artikel zur entsprechenden Tabelle hinzu"""
             if self.current_page == "eingang":
@@ -709,26 +636,28 @@ class App(tk.Tk):
             tree.insert("", "end", values=values)
             print(f"Artikel erkannt und hinzugefügt: {article_number}")
 
-        # FUNKTION: Aktualisiert den Webcam-Stream kontinuierlich (ERWEITERT)
+        # FUNKTION: Optimierter Webcam-Stream (OPTIMIERT)
         def update_webcam_stream(self):
-            """Aktualisiert das Webcam-Bild kontinuierlich mit OCR"""
+            """Optimierter Webcam-Stream für schwächere Hardware"""
             if self.cap is not None and self.cap.isOpened():
                 ret, frame = self.cap.read()
                 if ret:
                     # Frame für Display vorbereiten
-                    frame = cv2.flip(frame, 1)  # Horizontal spiegeln (Spiegel-Effekt)
+                    frame = cv2.flip(frame, 1)
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     
-                    # OCR durchführen (falls aktiv)
-                    ocr_result = self.perform_ocr_on_frame(frame_rgb)
-                    
-                    # ROI-Rahmen zeichnen und OCR-Ergebnis anzeigen
+                    # OCR nur bei aktiviertem Status und mit Frame-Skipping
+                    ocr_result = None
                     if self.ocr_active:
+                        ocr_result = self.perform_ocr_on_frame(frame_rgb)
+                    
+                    # ROI-Rahmen nur zeichnen, nicht bei jedem Frame
+                    if self.ocr_active and self.frame_counter % 10 == 0:  # Nur jeden 10. Frame
                         height, width = frame_rgb.shape[:2]
-                        roi_x = width // 4
-                        roi_y = height // 4
-                        roi_width = width // 2
-                        roi_height = height // 2
+                        roi_x = width // 3
+                        roi_y = height // 3
+                        roi_width = width // 3
+                        roi_height = height // 3
                         
                         # ROI-Rahmen zeichnen (grün)
                         cv2.rectangle(frame_rgb, (roi_x, roi_y), 
@@ -737,21 +666,19 @@ class App(tk.Tk):
                         # OCR-Text anzeigen falls erkannt
                         if ocr_result:
                             detected_text = ocr_result[0]
-                            # Text oberhalb der ROI anzeigen
                             cv2.putText(frame_rgb, f"Erkannt: {detected_text}", 
                                       (roi_x, roi_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 
-                                      0.7, (0, 255, 0), 2)
+                                      0.5, (0, 255, 0), 2)  # Kleinere Schrift
                             
                             # Validierung und Hinzufügung zur Tabelle
                             article_data = self.validate_article_number(detected_text)
                             if article_data:
                                 self.add_detected_article(article_data)
                     
-                    # Frame skalieren für bessere Darstellung
+                    # Kleinere Display-Größe für bessere Performance
+                    max_width, max_height = 400, 300  # Reduziert von 640x480
                     height, width = frame_rgb.shape[:2]
-                    max_width, max_height = 640, 480
                     
-                    # Seitenverhältnis beibehalten
                     if width > max_width or height > max_height:
                         scale = min(max_width/width, max_height/height)
                         new_width = int(width * scale)
@@ -765,42 +692,65 @@ class App(tk.Tk):
                     # Label aktualisieren
                     if hasattr(self, 'webcam_label'):
                         self.webcam_label.configure(image=photo, text="")
-                        self.webcam_label.image = photo  # Referenz behalten
+                        self.webcam_label.image = photo
                 else:
-                    # Fehler beim Lesen des Frames
                     if hasattr(self, 'webcam_label'):
                         self.webcam_label.configure(text="Webcam-Fehler", image="")
             else:
-                # Webcam nicht verfügbar
                 if hasattr(self, 'webcam_label'):
                     self.webcam_label.configure(text="Keine Webcam gefunden", image="")
             
-            # Nächstes Update planen (ca. 30 FPS)
+            # Reduzierte Update-Rate (15 FPS statt 30 FPS)
             if hasattr(self, 'webcam_label'):
-                self.after(33, self.update_webcam_stream)
+                self.after(66, self.update_webcam_stream)  # 66ms = ~15 FPS
+
+        # FUNKTION: Stoppt den Webcam-Stream
+        def stop_webcam_stream(self):
+            """Stoppt den Webcam-Stream"""
+            if hasattr(self, 'webcam_label'):
+                self.webcam_label.destroy()
+                delattr(self, 'webcam_label')
+
+        # FUNKTION: Zeigt Pop-up an wenn Kamera nicht gefunden wurde
+        def show_camera_not_found_popup(self):
+            """Zeigt ein Pop-up an, wenn die Logitech C920 nicht gefunden wurde"""
+            popup = tk.Toplevel(self)
+            popup.title("Kamera nicht gefunden")
+            popup.geometry("300x150")
+            popup.resizable(False, False)
+            
+            # Pop-up zentrieren
+            popup.transient(self)
+            popup.grab_set()
+            
+            # Text anzeigen
+            message_label = tk.Label(popup, text="Logitech C920 nicht gefunden", 
+                                   font=("Arial", 12), pady=20)
+            message_label.pack()
+            
+            # OK Button
+            ok_button = tk.Button(popup, text="OK", command=popup.destroy, 
+                                width=10, pady=5)
+            ok_button.pack(pady=10)
+            
+            # Fokus auf Pop-up setzen
+            popup.focus_set()
 
         # FUNKTION: Placeholder für Drucken-Funktion
         def drucken(self):
             """Placeholder für Drucken-Funktionalität"""
             print("Drucken-Funktion aufgerufen")
 
-        # FUNKTION: Placeholder für Find Printer-Funktion
-        def find_printer(self):
-            """Placeholder für Find Printer-Funktionalität"""
-            print("Find Printer-Funktion aufgerufen")
-
 if __name__ == "__main__":
-    print("=== HIGH PERFORMANCE HARDWARE MODE ===")
-    print("Optimiert für: Desktop PCs, Laptops, leistungsstarke Hardware")
+    print("=== LOW PERFORMANCE HARDWARE MODE ===")
+    print("Optimiert für: Raspberry Pi 3B, ältere PCs, schwächere Hardware")
     print("Einstellungen:")
-    print("- Webcam-Auflösung: 640x480 @ 30 FPS")
-    print("- Display-Größe: 640x480")
-    print("- OCR-Rate: ~2x pro Sekunde")
-    print("- Erweiterte Bildverarbeitung (CLAHE, Gaussian Blur, Otsu)")
-    print("- Volle UI-Update-Rate (30 FPS)")
-    print("- 2x Bildvergrößerung für OCR")
-    print("- Höhere Konfidenz-Schwelle (60%)")
-    print("==========================================")
+    print("- Webcam-Auflösung: 480x360 @ 15 FPS")
+    print("- Display-Größe: 400x300")
+    print("- OCR-Rate: ~1x pro Sekunde")
+    print("- Vereinfachte Bildverarbeitung")
+    print("- Reduzierte UI-Update-Rate")
+    print("=========================================")
+    
     app = App()
-    #app.test()
     app.mainloop()
