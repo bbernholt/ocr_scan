@@ -8,6 +8,7 @@ import openpyxl
 from pygrabber.dshow_graph import FilterGraph
 import pytesseract
 import re
+import numpy as np
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -48,6 +49,11 @@ class App(tk.Tk):
             self.last_frame = None
             self.ocr_results = []
             self.stop_event = None
+
+            # Video-/OCR-Settings (max. 720p, OCR bis 960px Breite)
+            self.capture_candidates = [(1280, 720), (640, 480)]
+            self.capture_fps = 30
+            self.ocr_max_width = 960
             
             # Artikel-Daten
             self.artikel_dict_eingang = []           # Excel-Daten Wareneingang
@@ -61,9 +67,8 @@ class App(tk.Tk):
             self.build_warenausgang()
             self.show_startseite()
 
-            # Webcam suchen und initialisieren (in separatem Thread)
-            self.cap = None
-            threading.Thread(target=self.initialize_webcam, daemon=True).start()
+            # Debugging-Hotkey (F9)
+            self.bind("<F9>", lambda e: self.debug_print_article_dicts())
 
         #------------------------------------------------------- GUI ---------------------------------------------------------
 
@@ -314,34 +319,55 @@ class App(tk.Tk):
                 return None
 
         def initialize_webcam(self):
-            """Initialisiert die Webcam mit niedriger Latenz"""
+            """Initialisiert die C920 mit DirectShow und bestmöglicher Auflösung (max 720p)."""
             camera_index = self.find_logitech_c920(show_popup=False)
-            if camera_index is not None:
-                try:
-                    self.cap = cv2.VideoCapture(camera_index)
-                    if self.cap.isOpened():
-                        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                        self.cap.set(cv2.CAP_PROP_FPS, 30)
-                        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-                        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-                        print("Webcam initialisiert (640x480 @ 30 FPS)")
-                        return True
-                    else:
-                        print("Webcam konnte nicht geöffnet werden")
-                        return False
-                except Exception as e:
-                    print(f"Fehler beim Öffnen der Webcam: {e}")
+            if camera_index is None:
+                return False
+            try:
+                if self.cap is not None:
+                    try:
+                        self.cap.release()
+                    except Exception:
+                        pass
+
+                self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+                if not self.cap.isOpened():
+                    print("Webcam konnte nicht geöffnet werden")
                     return False
-            return False
+
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+
+                selected = None
+                for w, h in self.capture_candidates:
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                    self.cap.set(cv2.CAP_PROP_FPS, self.capture_fps)
+                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+                    self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+
+                    rw = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    rh = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    if rw == w and rh == h:
+                        selected = (rw, rh)
+                        break
+
+                if selected is None:
+                    selected = (int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                                int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+
+                print(f"Webcam initialisiert ({selected[0]}x{selected[1]} @ {self.capture_fps} FPS, CAP_DSHOW + MJPG)")
+                return True
+            except Exception as e:
+                print(f"Fehler beim Öffnen der Webcam: {e}")
+                return False
 
         def check_webcam_for_page(self):
-            """Prüft ob Webcam verfügbar ist und zeigt Pop-up falls nicht"""
+            """Prüft ob Webcam verfügbar ist und initialisiert sie bei Bedarf."""
             if self.cap is None or not self.cap.isOpened():
-                camera_index = self.find_logitech_c920(show_popup=True)
-                if camera_index is not None:
-                    self.cap = cv2.VideoCapture(camera_index)
+                ok = self.initialize_webcam()
+                if not ok:
+                    self.show_camera_not_found_popup()
 
         def start_webcam_stream(self, frame):
             """Startet den Webcam-Livestream im gegebenen Frame"""
@@ -366,28 +392,18 @@ class App(tk.Tk):
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.last_frame = frame.copy()
-
-            # OCR-Boxen (rot) zeichnen, falls vorhanden
-            for box in self.ocr_results:
-                x, y, w, h = box['left'], box['top'], box['width'], box['height']
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                cv2.putText(frame, box['text'], (x, max(0, y - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            display_frame = cv2.resize(frame_rgb, (640, 480))
-            img = Image.fromarray(display_frame)
-            photo = ImageTk.PhotoImage(img)
-            if hasattr(self, 'webcam_label'):
-                self.webcam_label.configure(image=photo, text="")
-                self.webcam_label.image = photo
-            else:
-                if hasattr(self, 'webcam_label'):
-                    self.webcam_label.configure(text="Webcam-Fehler", image="")
+                    display_frame = cv2.resize(frame_rgb, (640, 480))
+                    img = Image.fromarray(display_frame)
+                    photo = ImageTk.PhotoImage(img)
+                    if hasattr(self, 'webcam_label'):
+                        self.webcam_label.configure(image=photo, text="")
+                        self.webcam_label.image = photo
                 else:
                     if hasattr(self, 'webcam_label'):
-                        self.webcam_label.configure(text="Keine Webcam gefunden", image="")
+                        self.webcam_label.configure(text="Webcam-Fehler", image="")
+            else:
+                if hasattr(self, 'webcam_label'):
+                    self.webcam_label.configure(text="Keine Webcam gefunden", image="")
 
             if hasattr(self, 'webcam_label'):
                 self.after(33, self.update_webcam_stream)
@@ -435,40 +451,171 @@ class App(tk.Tk):
             self.ocr_results = []
 
         def ocr_loop(self):
-            """Einfache Vollbild-OCR (A-Z, 0-9) mit Bounding-Boxes."""
-            config = '--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            """Rotationstolerante Vollbild-OCR (A-Z, 0-9) mit Bounding-Boxes."""
+            base_config_cardinal = '--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            base_config_sweep = '--oem 3 --psm 11 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
             conf_threshold = 50
+            conf_threshold_sweep = 48
+
+            # Erst kardinale Orientierungen, dann kleine Sweeps um diese Winkel
+            angles_cardinal = [0, 180, 90, 270]
+            delta = [-12, -8, -4, 4, 8, 12]
+            angles_sweep = [a + d for a in angles_cardinal for d in delta]
+
+            early_stop_boxes = 10
+
+            def rotate_with_bounds(img, angle):
+                (h, w) = img.shape[:2]
+                (cx, cy) = (w / 2.0, h / 2.0)
+                M = cv2.getRotationMatrix2D((cx, cy), angle, 1.0)
+                cos = abs(M[0, 0]); sin = abs(M[0, 1])
+                nW = int(h * sin + w * cos)
+                nH = int(h * cos + w * sin)
+                M[0, 2] += (nW / 2.0) - cx
+                M[1, 2] += (nH / 2.0) - cy
+                rotated = cv2.warpAffine(img, M, (nW, nH), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+                Minv = cv2.invertAffineTransform(M)
+                return rotated, Minv
+
+            def map_box_back(Minv, x, y, w, h, sw, sh):
+                pts = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+                mapped = []
+                for px, py in pts:
+                    ox = Minv[0, 0] * px + Minv[0, 1] * py + Minv[0, 2]
+                    oy = Minv[1, 0] * px + Minv[1, 1] * py + Minv[1, 2]
+                    mapped.append((ox, oy))
+                xs = [p[0] for p in mapped]; ys = [p[1] for p in mapped]
+                x_min = max(0, int(np.floor(min(xs))))
+                y_min = max(0, int(np.floor(min(ys))))
+                x_max = min(sw, int(np.ceil(max(xs))))
+                y_max = min(sh, int(np.ceil(max(ys))))
+                W = max(0, x_max - x_min); H = max(0, y_max - y_min)
+                return x_min, y_min, W, H
+
             while self.stop_event and not self.stop_event.is_set():
                 frame = self.last_frame
                 if frame is None or self.current_page not in ("eingang", "ausgang"):
                     threading.Event().wait(0.2)
                     continue
                 try:
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    data = pytesseract.image_to_data(rgb, config=config, output_type=pytesseract.Output.DICT)
+                    orig_h, orig_w = frame.shape[:2]
+                    target_w = min(self.ocr_max_width, orig_w)
+                    scale = target_w / float(orig_w)
+                    small = cv2.resize(frame, (target_w, int(orig_h * scale)))
+                    small_h, small_w = small.shape[:2]
 
-                    boxes = []
-                    texts = []
-                    n = len(data.get('text', []))
-                    for i in range(n):
-                        text = (data['text'][i] or '').strip().upper()
-                        if not text or not re.fullmatch(r'[A-Z0-9]+', text):
+                    boxes_all = []
+                    texts_all = []
+
+                    # 1) Kardinale Winkel zuerst (ohne Binarisierung, PSM 6)
+                    for angle in angles_cardinal:
+                        rot, Minv = rotate_with_bounds(small, angle)
+                        rot_rgb = cv2.cvtColor(rot, cv2.COLOR_BGR2RGB)
+
+                        data = pytesseract.image_to_data(
+                            rot_rgb,
+                            config=base_config_cardinal,
+                            output_type=pytesseract.Output.DICT
+                        )
+
+                        n = len(data.get('text', []))
+                        for i in range(n):
+                            text = (data['text'][i] or '').strip().upper()
+                            if not text or not re.fullmatch(r'[A-Z0-9]+', text):
+                                continue
+                            try:
+                                conf = int(float(data['conf'][i]))
+                            except ValueError:
+                                conf = -1
+                            if conf < conf_threshold:
+                                continue
+
+                            rx = int(data['left'][i]); ry = int(data['top'][i])
+                            rw = int(data['width'][i]); rh = int(data['height'][i])
+
+                            sx, sy, sw_box, sh_box = map_box_back(Minv, rx, ry, rw, rh, small_w, small_h)
+                            if sw_box <= 2 or sh_box <= 2:
+                                continue
+
+                            ox = int(round(sx / scale))
+                            oy = int(round(sy / scale))
+                            ow = int(round(sw_box / scale))
+                            oh = int(round(sh_box / scale))
+
+                            ox = max(0, min(ox, orig_w - 1))
+                            oy = max(0, min(oy, orig_h - 1))
+                            if ox + ow > orig_w: ow = orig_w - ox
+                            if oy + oh > orig_h: oh = orig_h - oy
+                            if ow <= 2 or oh <= 2:
+                                continue
+
+                            boxes_all.append({'text': text, 'left': ox, 'top': oy, 'width': ow, 'height': oh})
+                            texts_all.append(text)
+
+                    # Early-Stop erst NACH kardinalen Winkeln
+                    if len(boxes_all) < early_stop_boxes:
+                        # 2) Feinsweeps um alle kardinalen Winkel (mit Otsu + PSM 11)
+                        for angle in angles_sweep:
+                            if len(boxes_all) >= early_stop_boxes:
+                                break
+
+                            rot, Minv = rotate_with_bounds(small, angle)
+                            gray = cv2.cvtColor(rot, cv2.COLOR_BGR2GRAY)
+                            _, bin_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                            data = pytesseract.image_to_data(
+                                bin_img,
+                                config=base_config_sweep,
+                                output_type=pytesseract.Output.DICT
+                            )
+
+                            n = len(data.get('text', []))
+                            for i in range(n):
+                                text = (data['text'][i] or '').strip().upper()
+                                if not text or not re.fullmatch(r'[A-Z0-9]+', text):
+                                    continue
+                                try:
+                                    conf = int(float(data['conf'][i]))
+                                except ValueError:
+                                    conf = -1
+                                if conf < conf_threshold_sweep:
+                                    continue
+
+                                rx = int(data['left'][i]); ry = int(data['top'][i])
+                                rw = int(data['width'][i]); rh = int(data['height'][i])
+
+                                sx, sy, sw_box, sh_box = map_box_back(Minv, rx, ry, rw, rh, small_w, small_h)
+                                if sw_box <= 2 or sh_box <= 2:
+                                    continue
+
+                                ox = int(round(sx / scale))
+                                oy = int(round(sy / scale))
+                                ow = int(round(sw_box / scale))
+                                oh = int(round(sh_box / scale))
+
+                                ox = max(0, min(ox, orig_w - 1))
+                                oy = max(0, min(oy, orig_h - 1))
+                                if ox + ow > orig_w: ow = orig_w - ox
+                                if oy + oh > orig_h: oh = orig_h - oy
+                                if ow <= 2 or oh <= 2:
+                                    continue
+
+                                boxes_all.append({'text': text, 'left': ox, 'top': oy, 'width': ow, 'height': oh})
+                                texts_all.append(text)
+
+                    # Duplikate reduzieren
+                    dedup = []
+                    seen = set()
+                    for b in boxes_all:
+                        key = (b['text'], b['left'] // 25, b['top'] // 25)
+                        if key in seen:
                             continue
-                        try:
-                            conf = int(float(data['conf'][i]))
-                        except ValueError:
-                            conf = -1
-                        if conf < conf_threshold:
-                            continue
+                        seen.add(key)
+                        dedup.append(b)
 
-                        left = int(data['left'][i]); top = int(data['top'][i])
-                        width = int(data['width'][i]); height = int(data['height'][i])
-                        boxes.append({'text': text, 'left': left, 'top': top, 'width': width, 'height': height})
-                        texts.append(text)
-
-                    self.ocr_results = boxes
-                    if texts:
-                        print("Erkannt:", ", ".join(sorted(set(texts))))
+                    self.ocr_results = dedup
+                    if texts_all:
+                        print("Erkannt:", ", ".join(sorted(set(texts_all))))
 
                     threading.Event().wait(0.5)
                 except Exception as e:
@@ -485,6 +632,14 @@ class App(tk.Tk):
             """Placeholder für Find Printer-Funktionalität"""
             print("Find Printer-Funktion aufgerufen")
 
+        # ---------------------------------------- Debugging-Hilfen ----------------------------------------
+        def debug_print_article_dicts(self):
+            print(f"[DEBUG] Eingang: {len(self.artikel_dict_eingang)} Einträge")
+            for i, row in enumerate(self.artikel_dict_eingang[:5]):
+                print(f"[E{i}] {row}")
+            print(f"[DEBUG] Ausgang: {len(self.artikel_dict_ausgang)} Einträge")
+            for i, row in enumerate(self.artikel_dict_ausgang[:5]):
+                print(f"[A{i}] {row}")
 
 if __name__ == "__main__":
     print("=== WEBCAM-ANSICHT MIT EINFACHER VOLLBILD-OCR (A-Z,0-9) ===")
