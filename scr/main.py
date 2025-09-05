@@ -11,6 +11,7 @@ import re
 import numpy as np
 import pyodbc
 import sys
+import time
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -483,6 +484,7 @@ class App(tk.Tk):
             delta = [-12, -8, -4, 4, 8, 12]
             angles_sweep = [a + d for a in angles_cardinal for d in delta]
             early_stop_boxes = 10
+            target_period = 0.25  # ← max. 4 OCR-Durchläufe pro Sekunde
 
             def rotate_with_bounds(img, angle):
                 (h, w) = img.shape[:2]
@@ -513,9 +515,11 @@ class App(tk.Tk):
                 return x_min, y_min, W, H
 
             while self.stop_event and not self.stop_event.is_set():
+                loop_start = time.perf_counter()  # ← Startzeit für Throttling
                 frame = self.last_frame
                 if frame is None or self.current_page not in ("eingang", "ausgang"):
-                    threading.Event().wait(0.2)
+                    # Bei inaktivem Frame/Page trotzdem nicht über 4 Hz laufen
+                    self.stop_event.wait(target_period)
                     continue
                 try:
                     orig_h, orig_w = frame.shape[:2]
@@ -621,11 +625,13 @@ class App(tk.Tk):
 
                     if texts_all:
                         print("Erkannt:", ", ".join(sorted(set(texts_all))))
-
-                    threading.Event().wait(0.5)
                 except Exception as e:
                     print(f"OCR-Fehler: {e}")
-                    threading.Event().wait(0.5)
+                # Dynamische Wartezeit, sodass ein Loop mind. target_period dauert
+                elapsed = time.perf_counter() - loop_start
+                remaining = target_period - elapsed
+                if remaining > 0:
+                    self.stop_event.wait(remaining)
 
         # ------------------------ OCR → Wareneingang: Treffer verarbeiten ------------------------
         def _norm_text(self, s: str) -> str:
