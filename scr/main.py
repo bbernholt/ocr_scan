@@ -12,6 +12,7 @@ import numpy as np
 import pyodbc
 import sys
 import time
+import socket
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -84,11 +85,28 @@ class App(tk.Tk):
             self.build_warenausgang()
             self.show_startseite()
 
-            # Debugging-Hotkey (F9)
-            self.bind("<F9>", lambda e: self.debug_print_article_dicts())
+            # Drucker-IP und Port (bei Godex meistens 9100)
+            PRINTER_IP = "192.168.1.50"
+            PRINTER_PORT = 9100
 
-            # F10: Anzeige-Undistort umschalten (nur Preview, nicht OCR)
+            # EZPL-Befehle (ein einfacher Testdruck)
+            EZPL_CODE = """
+            ^Q50,3
+            ^W50
+            ^H10
+            ^P1
+            ^S2
+            ^AD
+            ^L
+            A10,10,0,1,1,1,N,"Hello World"
+            E
+"""
+
+            # Debug-Hotkeys
+            self.bind("<F9>", lambda e: self.debug_print_article_dicts())
             self.bind("<F10>", self.debug_toggle_undistort)
+            self.bind("<F11>", self.toggle_print_mode)  # Direktdruck toggeln
+            self.print_enabled = False                  # Direktdruck aus
             self.undistort_enabled = False
             self._undistort_map1 = None
             self._undistort_map2 = None
@@ -935,6 +953,10 @@ class App(tk.Tk):
 
         def on_drucken_eingang(self):
             """Druck-Workflow Wareneingang: Excel-Update nur für NICHT manuelle Einträge."""
+            # Einmaligen Druckjob senden, wenn F11 zuvor aktiviert wurde
+            if getattr(self, "print_enabled", False):
+                self.send_printer_ezpl_once()
+            
             iids = self.tree_eingang.selection()
             if not iids:
                 iids = self.tree_eingang.get_children()
@@ -975,6 +997,9 @@ class App(tk.Tk):
 
         def on_drucken_ausgang(self):
             """Druck-Workflow Warenausgang: Excel-Update nur für NICHT manuelle Einträge."""
+            # Einmaligen Druckjob senden, wenn F11 zuvor aktiviert wurde
+            if getattr(self, "print_enabled", False):
+                self.send_printer_ezpl_once()
             iids = self.tree_ausgang.selection()
             if not iids:
                 iids = self.tree_ausgang.get_children()
@@ -1278,6 +1303,7 @@ class App(tk.Tk):
             print("Find Printer-Funktion aufgerufen")
 
         # ---------------------------------------- Debugging-Hilfen ----------------------------------------
+        # ------------ F9: Azeige geladener Inhalt aus Excelfile ------------
         def debug_print_article_dicts(self):
             print(f"[DEBUG] Eingang: {len(self.artikel_dict_eingang)} Einträge")
             for i, row in enumerate(self.artikel_dict_eingang[:5]):
@@ -1323,6 +1349,28 @@ class App(tk.Tk):
             map1, map2 = cv2.initUndistortRectifyMap(self._K, self._dist, None, newK, (w, h), cv2.CV_16SC2)
             self._undistort_map1, self._undistort_map2 = map1, map2
             self._undistort_size = (w, h)
+
+        # ------------ F11: Direktdruck toggeln/ausführen ------------
+        def toggle_print_mode(self, event=None):
+            """Aktiviert/Deaktiviert den Direktdruck. Wenn aktiv, sendet 'Drucken' genau einen EZPL-Job."""
+            self.print_enabled = not self.print_enabled
+            state = "AKTIV" if self.print_enabled else "inaktiv"
+            print(f"[Druck] Direktdruck ist jetzt {state}.")
+
+        def send_printer_ezpl_once(self, ezpl: str = None):
+            """Sendet genau einmal einen EZPL-Job an den konfigurierten Drucker (nicht blockierend)."""
+            code = ezpl if ezpl is not None else EZPL_CODE
+            threading.Thread(target=self._send_ezpl_worker, args=(code,), daemon=True).start()
+
+        def _send_ezpl_worker(self, ezpl: str):
+            """TCP-Raw-9100 Versand des EZPL-Codes (mit Timeout und Fehler-Log)."""
+            try:
+                with socket.create_connection((PRINTER_IP, PRINTER_PORT), timeout=5) as s:
+                    payload = ezpl.encode("ascii", errors="ignore")  # EZPL ist ASCII-basiert
+                    s.sendall(payload)
+                print(f"[Druck] EZPL an {PRINTER_IP}:{PRINTER_PORT} gesendet.")
+            except Exception as e:
+                print(f"[Druck] Fehler beim Senden an {PRINTER_IP}:{PRINTER_PORT}: {e}")
 
 if __name__ == "__main__":
     print("=== WEBCAM-ANSICHT MIT EINFACHER VOLLBILD-OCR (A-Z,0-9) ===")
