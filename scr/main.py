@@ -475,16 +475,19 @@ class App(tk.Tk):
                 self.detected_set_eingang.clear()
 
         def ocr_loop(self):
-            """Rotationstolerante Vollbild-OCR (A-Z, 0-9) mit Bounding-Boxes."""
+            """Rotationstolerante Vollbild-OCR (A-Z, 0-9) mit Bounding-Boxes, 4 Hz gedeckelt."""
             base_config_cardinal = '--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
             base_config_sweep = '--oem 3 --psm 11 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-            conf_threshold = 50
-            conf_threshold_sweep = 48
+            conf_threshold_strict = 50         # für erwartetes Muster (Buchstaben+Zahlen)
+            conf_threshold_fallback = 58       # strenger für generische alphanumerische Tokens
             angles_cardinal = [0, 180, 90, 270]
             delta = [-12, -8, -4, 4, 8, 12]
             angles_sweep = [a + d for a in angles_cardinal for d in delta]
             early_stop_boxes = 10
-            target_period = 0.25  # ← max. 4 OCR-Durchläufe pro Sekunde
+            target_period = 0.25  # max. 4 OCR-Durchläufe pro Sekunde
+
+            strict_pattern = re.compile(r'^[A-Z]{1,4}[0-9]{2,6}$')   # z. B. AS2005, KL5015 etc.
+            fallback_pattern = re.compile(r'^[A-Z0-9]{4,10}$')
 
             def rotate_with_bounds(img, angle):
                 (h, w) = img.shape[:2]
@@ -498,6 +501,26 @@ class App(tk.Tk):
                 rotated = cv2.warpAffine(img, M, (nW, nH), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
                 Minv = cv2.invertAffineTransform(M)
                 return rotated, Minv
+
+            def preprocess_for_ocr(img_bgr, use_binary: bool):
+                # Kontrast verbessern
+                gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                gray = clahe.apply(gray)
+                if use_binary:
+                    # Binär + leichte Morphologie, um Text zu stabilisieren
+                    _, bin_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+                    bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_OPEN, kernel, iterations=1)
+                    bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_CLOSE, kernel, iterations=1)
+                    img = bin_img
+                else:
+                    img = gray
+                # Leicht hochskalieren für bessere Glyphen (begrenzt, damit 4 Hz bleiben)
+                h, w = img.shape[:2]
+                scale_up = 1.25
+                img = cv2.resize(img, (int(w * scale_up), int(h * scale_up)), interpolation=cv2.INTER_CUBIC)
+                return img, scale_up
 
             def map_box_back(Minv, x, y, w, h, sw, sh):
                 pts = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
@@ -515,10 +538,9 @@ class App(tk.Tk):
                 return x_min, y_min, W, H
 
             while self.stop_event and not self.stop_event.is_set():
-                loop_start = time.perf_counter()  # ← Startzeit für Throttling
+                loop_start = time.perf_counter()
                 frame = self.last_frame
                 if frame is None or self.current_page not in ("eingang", "ausgang"):
-                    # Bei inaktivem Frame/Page trotzdem nicht über 4 Hz laufen
                     self.stop_event.wait(target_period)
                     continue
                 try:
@@ -531,24 +553,36 @@ class App(tk.Tk):
                     boxes_all = []
                     texts_all = []
 
-                    # 1) Kardinale Winkel (PSM 6, ohne Binarisierung)
+                    # 1) Kardinale Winkel: ohne Binärbild (PSM 6)
                     for angle in angles_cardinal:
                         rot, Minv = rotate_with_bounds(small, angle)
-                        rot_rgb = cv2.cvtColor(rot, cv2.COLOR_BGR2RGB)
-                        data = pytesseract.image_to_data(rot_rgb, config=base_config_cardinal, output_type=pytesseract.Output.DICT)
+                        prep, up = preprocess_for_ocr(rot, use_binary=False)
+                        data = pytesseract.image_to_data(prep, config=base_config_cardinal, output_type=pytesseract.Output.DICT)
                         n = len(data.get('text', []))
                         for i in range(n):
-                            text = (data['text'][i] or '').strip().upper()
-                            if not text or not re.fullmatch(r'[A-Z0-9]+', text):
+                            raw = (data['text'][i] or '').strip().upper()
+                            text = re.sub(r'[^A-Z0-9]', '', raw)
+                            if not text:
+                                continue
+                            # Musterbewertung
+                            is_strict = bool(strict_pattern.fullmatch(text))
+                            if not is_strict and not fallback_pattern.fullmatch(text):
                                 continue
                             try:
                                 conf = int(float(data['conf'][i]))
                             except ValueError:
                                 conf = -1
-                            if conf < conf_threshold:
+                            if conf < (conf_threshold_strict if is_strict else conf_threshold_fallback):
                                 continue
-                            rx = int(data['left'][i]); ry = int(data['top'][i])
-                            rw = int(data['width'][i]); rh = int(data['height'][i])
+
+                            rx = int(round(data['left'][i] * 1.0))         # Koordinaten kamen aus upscaled Bild?
+                            ry = int(round(data['top'][i] * 1.0))
+                            rw = int(round(data['width'][i] * 1.0))
+                            rh = int(round(data['height'][i] * 1.0))
+                            # zurückrechnen: erst Upscale, dann Rotation
+                            rx = int(round(rx / up)); ry = int(round(ry / up))
+                            rw = int(round(rw / up)); rh = int(round(rh / up))
+
                             sx, sy, sw_box, sh_box = map_box_back(Minv, rx, ry, rw, rh, small_w, small_h)
                             if sw_box <= 2 or sh_box <= 2:
                                 continue
@@ -562,28 +596,37 @@ class App(tk.Tk):
                             boxes_all.append({'text': text, 'left': ox, 'top': oy, 'width': ow, 'height': oh})
                             texts_all.append(text)
 
-                    # 2) Feinsweeps (PSM 11 + Otsu), nur wenn noch wenig Treffer
+                    # 2) Feinsweeps: mit Binärbild (PSM 11), nur wenn noch wenig Treffer
                     if len(boxes_all) < early_stop_boxes:
                         for angle in angles_sweep:
                             if len(boxes_all) >= early_stop_boxes:
                                 break
                             rot, Minv = rotate_with_bounds(small, angle)
-                            gray = cv2.cvtColor(rot, cv2.COLOR_BGR2GRAY)
-                            _, bin_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                            data = pytesseract.image_to_data(bin_img, config=base_config_sweep, output_type=pytesseract.Output.DICT)
+                            prep, up = preprocess_for_ocr(rot, use_binary=True)
+                            data = pytesseract.image_to_data(prep, config=base_config_sweep, output_type=pytesseract.Output.DICT)
                             n = len(data.get('text', []))
                             for i in range(n):
-                                text = (data['text'][i] or '').strip().upper()
-                                if not text or not re.fullmatch(r'[A-Z0-9]+', text):
+                                raw = (data['text'][i] or '').strip().upper()
+                                text = re.sub(r'[^A-Z0-9]', '', raw)
+                                if not text:
+                                    continue
+                                is_strict = bool(strict_pattern.fullmatch(text))
+                                if not is_strict and not fallback_pattern.fullmatch(text):
                                     continue
                                 try:
                                     conf = int(float(data['conf'][i]))
                                 except ValueError:
                                     conf = -1
-                                if conf < conf_threshold_sweep:
+                                if conf < (conf_threshold_strict if is_strict else conf_threshold_fallback):
                                     continue
-                                rx = int(data['left'][i]); ry = int(data['top'][i])
-                                rw = int(data['width'][i]); rh = int(data['height'][i])
+
+                                rx = int(round(data['left'][i] * 1.0))
+                                ry = int(round(data['top'][i] * 1.0))
+                                rw = int(round(data['width'][i] * 1.0))
+                                rh = int(round(data['height'][i] * 1.0))
+                                rx = int(round(rx / up)); ry = int(round(ry / up))
+                                rw = int(round(rw / up)); rh = int(round(rh / up))
+
                                 sx, sy, sw_box, sh_box = map_box_back(Minv, rx, ry, rw, rh, small_w, small_h)
                                 if sw_box <= 2 or sh_box <= 2:
                                     continue
@@ -609,14 +652,12 @@ class App(tk.Tk):
 
                     self.ocr_results = dedup
 
-                    # Wareneingang: erkannte Texte mit Excel (Status "0") abgleichen und einfügen
+                    # Treffer in Tabellen einpflegen
                     if self.current_page == "eingang":
                         for t in sorted(set(texts_all)):
                             row_match = self.find_eingang_match(t)
                             if row_match:
                                 self.after(0, self.insert_eingang_row, row_match)
-
-                    # Warenausgang: erkannte Texte mit Excel (Status "0") abgleichen und einfügen (inkl. Empfänger)
                     if self.current_page == "ausgang":
                         for t in sorted(set(texts_all)):
                             row_match = self.find_ausgang_match(t)
@@ -627,7 +668,8 @@ class App(tk.Tk):
                         print("Erkannt:", ", ".join(sorted(set(texts_all))))
                 except Exception as e:
                     print(f"OCR-Fehler: {e}")
-                # Dynamische Wartezeit, sodass ein Loop mind. target_period dauert
+
+                # 4 Hz Throttling
                 elapsed = time.perf_counter() - loop_start
                 remaining = target_period - elapsed
                 if remaining > 0:
