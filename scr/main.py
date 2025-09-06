@@ -87,6 +87,15 @@ class App(tk.Tk):
             # Debugging-Hotkey (F9)
             self.bind("<F9>", lambda e: self.debug_print_article_dicts())
 
+            # F10: Anzeige-Undistort umschalten (nur Preview, nicht OCR)
+            self.bind("<F10>", self.debug_toggle_undistort)
+            self.undistort_enabled = False
+            self._undistort_map1 = None
+            self._undistort_map2 = None
+            self._undistort_size = None
+            self._K = None
+            self._dist = None
+
         #------------------------------------------------------- GUI ---------------------------------------------------------
 
         def load_and_scale_images(self, breite, hoehe):
@@ -365,7 +374,7 @@ class App(tk.Tk):
                     self.cap.set(cv2.CAP_PROP_FPS, self.capture_fps)
                     self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-                    self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                    #self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
 
                     rw = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                     rh = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -411,6 +420,13 @@ class App(tk.Tk):
                         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
                         cv2.putText(frame, box['text'], (x, max(0, y - 5)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                        
+                    # Optional: Anzeige entzerren (nur Preview, nicht OCR)
+                    if self.undistort_enabled:
+                        h, w = frame.shape[:2]
+                        self._ensure_undistort_maps(w, h)
+                        if self._undistort_map1 is not None:
+                            frame = cv2.remap(frame, self._undistort_map1, self._undistort_map2, cv2.INTER_LINEAR)
 
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     display_frame = cv2.resize(frame_rgb, (640, 480))
@@ -475,16 +491,17 @@ class App(tk.Tk):
                 self.detected_set_eingang.clear()
 
         def ocr_loop(self):
-            """Rotationstolerante Vollbild-OCR (A-Z, 0-9) mit Bounding-Boxes, 4 Hz gedeckelt."""
-            base_config_cardinal = '--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-            base_config_sweep = '--oem 3 --psm 11 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-            conf_threshold_strict = 50         # für erwartetes Muster (Buchstaben+Zahlen)
-            conf_threshold_fallback = 58       # strenger für generische alphanumerische Tokens
-            angles_cardinal = [0, 180, 90, 270]
-            delta = [-12, -8, -4, 4, 8, 12]
-            angles_sweep = [a + d for a in angles_cardinal for d in delta]
-            early_stop_boxes = 10
-            target_period = 0.25  # max. 4 OCR-Durchläufe pro Sekunde
+            """OCR über 4 Ausrichtungen (0/90/180/270) inkl. ±15° Schieflage; 8 Hz; max. 12 Treffer pro Frame."""
+            base_config_cardinal = '--oem 3 --psm 6  -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            base_config_sweep    = '--oem 3 --psm 11 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            conf_threshold_strict = 50
+            conf_threshold_fallback = 58
+            early_stop_boxes = 12   # max. Anzahl akzeptierter Treffer pro Frame
+            target_period = 1.0 / 8.0  # 8 Hz
+
+            # 4 Hauptrichtungen + ±15° Schieflage
+            bases = [0, 90, 180, 270]
+            deltas = [-15, -10, -5, 0, 5, 10, 15]
 
             strict_pattern = re.compile(r'^[A-Z]{1,4}[0-9]{2,6}$')   # z. B. AS2005, KL5015 etc.
             fallback_pattern = re.compile(r'^[A-Z0-9]{4,10}$')
@@ -503,20 +520,17 @@ class App(tk.Tk):
                 return rotated, Minv
 
             def preprocess_for_ocr(img_bgr, use_binary: bool):
-                # Kontrast verbessern
                 gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
                 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
                 gray = clahe.apply(gray)
                 if use_binary:
-                    # Binär + leichte Morphologie, um Text zu stabilisieren
                     _, bin_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
                     bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_OPEN, kernel, iterations=1)
-                    bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_CLOSE, kernel, iterations=1)
                     img = bin_img
                 else:
                     img = gray
-                # Leicht hochskalieren für bessere Glyphen (begrenzt, damit 4 Hz bleiben)
+                # leichtes Upscaling für bessere Glyphen
                 h, w = img.shape[:2]
                 scale_up = 1.25
                 img = cv2.resize(img, (int(w * scale_up), int(h * scale_up)), interpolation=cv2.INTER_CUBIC)
@@ -553,57 +567,17 @@ class App(tk.Tk):
                     boxes_all = []
                     texts_all = []
 
-                    # 1) Kardinale Winkel: ohne Binärbild (PSM 6)
-                    for angle in angles_cardinal:
-                        rot, Minv = rotate_with_bounds(small, angle)
-                        prep, up = preprocess_for_ocr(rot, use_binary=False)
-                        data = pytesseract.image_to_data(prep, config=base_config_cardinal, output_type=pytesseract.Output.DICT)
-                        n = len(data.get('text', []))
-                        for i in range(n):
-                            raw = (data['text'][i] or '').strip().upper()
-                            text = re.sub(r'[^A-Z0-9]', '', raw)
-                            if not text:
-                                continue
-                            # Musterbewertung
-                            is_strict = bool(strict_pattern.fullmatch(text))
-                            if not is_strict and not fallback_pattern.fullmatch(text):
-                                continue
-                            try:
-                                conf = int(float(data['conf'][i]))
-                            except ValueError:
-                                conf = -1
-                            if conf < (conf_threshold_strict if is_strict else conf_threshold_fallback):
-                                continue
+                    # Alle Ausrichtungen mit ±15° Schieflage prüfen
+                    for base in bases:
+                        for d in deltas:
+                            ang = (base + d) % 360
+                            use_binary = (d != 0)  # Basiswinkel ohne Binarisierung, Sweeps binär
+                            config = base_config_sweep if use_binary else base_config_cardinal
 
-                            rx = int(round(data['left'][i] * 1.0))         # Koordinaten kamen aus upscaled Bild?
-                            ry = int(round(data['top'][i] * 1.0))
-                            rw = int(round(data['width'][i] * 1.0))
-                            rh = int(round(data['height'][i] * 1.0))
-                            # zurückrechnen: erst Upscale, dann Rotation
-                            rx = int(round(rx / up)); ry = int(round(ry / up))
-                            rw = int(round(rw / up)); rh = int(round(rh / up))
+                            rot, Minv = rotate_with_bounds(small, ang)
+                            prep, up = preprocess_for_ocr(rot, use_binary=use_binary)
+                            data = pytesseract.image_to_data(prep, config=config, output_type=pytesseract.Output.DICT)
 
-                            sx, sy, sw_box, sh_box = map_box_back(Minv, rx, ry, rw, rh, small_w, small_h)
-                            if sw_box <= 2 or sh_box <= 2:
-                                continue
-                            ox = int(round(sx / scale)); oy = int(round(sy / scale))
-                            ow = int(round(sw_box / scale)); oh = int(round(sh_box / scale))
-                            ox = max(0, min(ox, orig_w - 1)); oy = max(0, min(oy, orig_h - 1))
-                            if ox + ow > orig_w: ow = orig_w - ox
-                            if oy + oh > orig_h: oh = orig_h - oy
-                            if ow <= 2 or oh <= 2:
-                                continue
-                            boxes_all.append({'text': text, 'left': ox, 'top': oy, 'width': ow, 'height': oh})
-                            texts_all.append(text)
-
-                    # 2) Feinsweeps: mit Binärbild (PSM 11), nur wenn noch wenig Treffer
-                    if len(boxes_all) < early_stop_boxes:
-                        for angle in angles_sweep:
-                            if len(boxes_all) >= early_stop_boxes:
-                                break
-                            rot, Minv = rotate_with_bounds(small, angle)
-                            prep, up = preprocess_for_ocr(rot, use_binary=True)
-                            data = pytesseract.image_to_data(prep, config=base_config_sweep, output_type=pytesseract.Output.DICT)
                             n = len(data.get('text', []))
                             for i in range(n):
                                 raw = (data['text'][i] or '').strip().upper()
@@ -620,12 +594,10 @@ class App(tk.Tk):
                                 if conf < (conf_threshold_strict if is_strict else conf_threshold_fallback):
                                     continue
 
-                                rx = int(round(data['left'][i] * 1.0))
-                                ry = int(round(data['top'][i] * 1.0))
-                                rw = int(round(data['width'][i] * 1.0))
-                                rh = int(round(data['height'][i] * 1.0))
-                                rx = int(round(rx / up)); ry = int(round(ry / up))
-                                rw = int(round(rw / up)); rh = int(round(rh / up))
+                                rx = int(round(data['left'][i] / up))
+                                ry = int(round(data['top'][i] / up))
+                                rw = int(round(data['width'][i] / up))
+                                rh = int(round(data['height'][i] / up))
 
                                 sx, sy, sw_box, sh_box = map_box_back(Minv, rx, ry, rw, rh, small_w, small_h)
                                 if sw_box <= 2 or sh_box <= 2:
@@ -637,10 +609,19 @@ class App(tk.Tk):
                                 if oy + oh > orig_h: oh = orig_h - oy
                                 if ow <= 2 or oh <= 2:
                                     continue
+
                                 boxes_all.append({'text': text, 'left': ox, 'top': oy, 'width': ow, 'height': oh})
                                 texts_all.append(text)
 
-                    # Duplikate reduzieren
+                                # Max. 12 Treffer pro Frame
+                                if len(boxes_all) >= early_stop_boxes:
+                                    break
+                            if len(boxes_all) >= early_stop_boxes:
+                                break
+                        if len(boxes_all) >= early_stop_boxes:
+                            break
+
+                    # Duplikate reduzieren und auf max. 12 beschränken
                     dedup = []
                     seen = set()
                     for b in boxes_all:
@@ -649,6 +630,8 @@ class App(tk.Tk):
                             continue
                         seen.add(key)
                         dedup.append(b)
+                        if len(dedup) >= early_stop_boxes:
+                            break
 
                     self.ocr_results = dedup
 
@@ -669,7 +652,7 @@ class App(tk.Tk):
                 except Exception as e:
                     print(f"OCR-Fehler: {e}")
 
-                # 4 Hz Throttling
+                # 8 Hz Throttling
                 elapsed = time.perf_counter() - loop_start
                 remaining = target_period - elapsed
                 if remaining > 0:
@@ -1071,6 +1054,44 @@ class App(tk.Tk):
             print(f"[DEBUG] Ausgang: {len(self.artikel_dict_ausgang)} Einträge")
             for i, row in enumerate(self.artikel_dict_ausgang[:5]):
                 print(f"[A{i}] {row}")
+
+        # ------------ F10: Undistort (nur Anzeige) ------------
+        def debug_toggle_undistort(self, event=None):
+            """Schaltet die Anzeige-Entzerrung (Undistort) ein/aus."""
+            self.undistort_enabled = not self.undistort_enabled
+            state = "AN" if self.undistort_enabled else "AUS"
+            print(f"[Debug] Undistort {state}")
+            if self.undistort_enabled and self.last_frame is not None:
+                h, w = self.last_frame.shape[:2]
+                self._ensure_undistort_maps(w, h)
+
+        def _ensure_undistort_maps(self, w: int, h: int):
+            """Stellt sicher, dass Remap-Tabellen für Undistort existieren (lädt Kalibrierung, sonst Schätzung)."""
+            if self._undistort_size == (w, h) and self._undistort_map1 is not None:
+                return
+            # Versuch: Kalibrierung aus JSON laden
+            try:
+                calib_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "calibration", "c920_720p.json"))
+                if os.path.exists(calib_path):
+                    import json
+                    with open(calib_path, "r", encoding="utf-8") as f:
+                        cal = json.load(f)
+                    K = np.array(cal["K"], dtype=np.float32)
+                    dist = np.array(cal["dist"], dtype=np.float32).reshape(-1, 1)
+                    self._K, self._dist = K, dist
+            except Exception as e:
+                print(f"[Debug] Konnte Kalibrierung nicht laden: {e}")
+            # Fallback: vorsichtige Schätzung (C920 ~78° FoV, leichte Tonne)
+            if self._K is None:
+                f = 0.6177 * w  # f_pix ≈ (w/2)/tan(78°/2)
+                self._K = np.array([[f, 0, w / 2.0],
+                                    [0, f, h / 2.0],
+                                    [0, 0, 1]], dtype=np.float32)
+                self._dist = np.array([-0.15, 0.03, 0.0, 0.0, 0.0], dtype=np.float32)
+            newK, _ = cv2.getOptimalNewCameraMatrix(self._K, self._dist, (w, h), alpha=0)
+            map1, map2 = cv2.initUndistortRectifyMap(self._K, self._dist, None, newK, (w, h), cv2.CV_16SC2)
+            self._undistort_map1, self._undistort_map2 = map1, map2
+            self._undistort_size = (w, h)
 
 if __name__ == "__main__":
     print("=== WEBCAM-ANSICHT MIT EINFACHER VOLLBILD-OCR (A-Z,0-9) ===")
