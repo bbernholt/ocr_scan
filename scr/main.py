@@ -164,26 +164,50 @@ class App(tk.Tk):
             self.dropdown_eingang.pack(pady=10)
 
             tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
-            columns = ("artikelnummer", "menge", "karton", "beutel", "status")
+            # Tree mit schlanken Spalten für "-" und "+" ganz links
+            columns = ("minus", "plus", "artikelnummer", "menge", "karton", "beutel", "status")
             self.tree_eingang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
+            self.tree_eingang.heading("minus", text="")
+            self.tree_eingang.heading("plus", text="")
             self.tree_eingang.heading("artikelnummer", text="Artikelnummer")
             self.tree_eingang.heading("menge", text="Menge")
             self.tree_eingang.heading("karton", text="Karton")
             self.tree_eingang.heading("beutel", text="Beutel")
             self.tree_eingang.heading("status", text="Status")
+            self.tree_eingang.column("minus", width=26, anchor="center", stretch=False)
+            self.tree_eingang.column("plus", width=26, anchor="center", stretch=False)
             self.tree_eingang.column("artikelnummer", width=120, anchor="center")
             self.tree_eingang.column("menge", width=80, anchor="center")
             self.tree_eingang.column("karton", width=80, anchor="center")
             self.tree_eingang.column("beutel", width=80, anchor="center")
             self.tree_eingang.column("status", width=80, anchor="center")
             self.tree_eingang.pack(expand=True, fill="both")
+            # Klicks auf +/- verarbeiten
+            self.tree_eingang.bind("<Button-1>", self.on_tree_eingang_click)
+
+            # NEU: Hinzufügen-Leiste unter der Tabelle
+            add_frame = tk.Frame(left_frame)
+            add_frame.pack(fill="x", pady=(8, 0))
+            # Eingabefelder (mit Platzhalter)
+            self.add_art_var = tk.StringVar()
+            self.add_menge_var = tk.StringVar()
+            self.entry_add_art = tk.Entry(add_frame, textvariable=self.add_art_var, width=24)
+            self.entry_add_menge = tk.Entry(add_frame, textvariable=self.add_menge_var, width=8)
+            self._setup_placeholder(self.entry_add_art, self.add_art_var, "Artikelnummer")
+            self._setup_placeholder(self.entry_add_menge, self.add_menge_var, "menge")
+            # Button "Hinzufügen" – gleiche Breite wie "Drucken"
+            self.btn_add_eingang = tk.Button(add_frame, text="Hinzufügen", width=12, command=self.on_add_eingang_click)
+            self.btn_add_eingang.pack(side="left")
+            self.entry_add_art.pack(side="left", padx=(8, 6))
+            self.entry_add_menge.pack(side="left")
 
             self.right_frame_eingang = tk.Frame(main_frame, bg="black")
             self.right_frame_eingang.pack(side="right", expand=False, fill="y", padx=20, pady=20)
 
             button_frame = tk.Frame(self.wareneingang_seite)
             button_frame.pack(pady=10)
-            tk.Button(button_frame, text="Drucken", command=self.on_drucken_eingang).pack(side="left", padx=5)  # geändert
+            # Breite setzen, damit gleich wie "Hinzufügen"
+            tk.Button(button_frame, text="Drucken", width=12, command=self.on_drucken_eingang).pack(side="left", padx=5)
             tk.Button(button_frame, text="Zurück", command=self.show_startseite).pack(side="left", padx=5)
             self.add_logo(self.wareneingang_seite)
 
@@ -220,28 +244,49 @@ class App(tk.Tk):
             self.dropdown_ausgang.pack(pady=10)
 
             tk.Label(left_frame, text="Erfasste Artikel", font=("Arial", 14)).pack(pady=(20,5))
-            columns = ("artikelnummer", "menge", "karton", "beutel", "empfaenger", "status")
+            # NEU: +/- Spalten wie bei Wareneingang
+            columns = ("minus", "plus", "artikelnummer", "menge", "karton", "beutel", "empfaenger", "status")
             self.tree_ausgang = ttk.Treeview(left_frame, columns=columns, show="headings", height=15)
+            self.tree_ausgang.heading("minus", text="")
+            self.tree_ausgang.heading("plus", text="")
             self.tree_ausgang.heading("artikelnummer", text="Artikelnummer")
             self.tree_ausgang.heading("menge", text="Menge")
             self.tree_ausgang.heading("karton", text="Karton")
             self.tree_ausgang.heading("beutel", text="Beutel")
             self.tree_ausgang.heading("empfaenger", text="Empfänger")
             self.tree_ausgang.heading("status", text="Status")
-            self.tree_ausgang.column("artikelnummer", width=70, anchor="center")
+            self.tree_ausgang.column("minus", width=26, anchor="center", stretch=False)
+            self.tree_ausgang.column("plus", width=26, anchor="center", stretch=False)
+            self.tree_ausgang.column("artikelnummer", width=90, anchor="center")
             self.tree_ausgang.column("menge", width=70, anchor="center")
             self.tree_ausgang.column("karton", width=70, anchor="center")
             self.tree_ausgang.column("beutel", width=70, anchor="center")
-            self.tree_ausgang.column("empfaenger", width=70, anchor="center")
-            self.tree_ausgang.column("status", width=50, anchor="center")
+            self.tree_ausgang.column("empfaenger", width=90, anchor="center")
+            self.tree_ausgang.column("status", width=60, anchor="center")
             self.tree_ausgang.pack(expand=True, fill="both")
+            # Klicks auf +/- verarbeiten
+            self.tree_ausgang.bind("<Button-1>", self.on_tree_ausgang_click)
+
+            # NEU: Hinzufügen-Leiste unter der Tabelle (Artikelnummer + Menge)
+            add_frame = tk.Frame(left_frame)
+            add_frame.pack(fill="x", pady=(8, 0))
+            self.add_art_var_out = tk.StringVar()
+            self.add_menge_var_out = tk.StringVar()
+            self.entry_add_art_out = tk.Entry(add_frame, textvariable=self.add_art_var_out, width=24)
+            self.entry_add_menge_out = tk.Entry(add_frame, textvariable=self.add_menge_var_out, width=8)
+            self._setup_placeholder(self.entry_add_art_out, self.add_art_var_out, "Artikelnummer")
+            self._setup_placeholder(self.entry_add_menge_out, self.add_menge_var_out, "menge")
+            self.btn_add_ausgang = tk.Button(add_frame, text="Hinzufügen", width=12, command=self.on_add_ausgang_click)
+            self.btn_add_ausgang.pack(side="left")
+            self.entry_add_art_out.pack(side="left", padx=(8, 6))
+            self.entry_add_menge_out.pack(side="left")
 
             self.right_frame_ausgang = tk.Frame(main_frame, bg="black")
             self.right_frame_ausgang.pack(side="right", expand=False, fill="y", padx=20, pady=20)
 
             button_frame = tk.Frame(self.warenausgang_seite)
             button_frame.pack(pady=10)
-            tk.Button(button_frame, text="Drucken", command=self.on_drucken_ausgang).pack(side="left", padx=5)  # NEU
+            tk.Button(button_frame, text="Drucken", width=12, command=self.on_drucken_ausgang).pack(side="left", padx=5)
             tk.Button(button_frame, text="Zurück", command=self.show_startseite).pack(side="left", padx=5)
             self.add_logo(self.warenausgang_seite)
 
@@ -695,13 +740,15 @@ class App(tk.Tk):
             if art_norm in self.detected_set_eingang:
                 return
             menge  = str(self._row_get(row, "Menge"))
+            if menge.strip() == "":
+                menge = "0"
             karton = str(self._row_get(row, "Karton"))
             beutel = str(self._row_get(row, "Beutel"))
             status = str(self._row_get(row, "Status"))
             try:
-                iid = self.tree_eingang.insert("", "end", values=(art, menge, karton, beutel, status))
+                # Spalten: minus, plus, artikelnummer, menge, karton, beutel, status
+                iid = self.tree_eingang.insert("", "end", values=("-", "+", art, menge, karton, beutel, status))
                 self.detected_set_eingang.add(art_norm)
-                # Karton/Beutel aus Datenbank aktualisieren (asynchron, UI bleibt flüssig)
                 self.update_row_from_db_async(art_norm, iid)
             except Exception as e:
                 print(f"[WARN] Konnte Datensatz nicht einfügen: {e}")
@@ -832,6 +879,26 @@ class App(tk.Tk):
             except Exception as e:
                 print(f"[WARN] Konnte Ausgangs-Datensatz nicht einfügen: {e}")
 
+        def insert_ausgang_row(self, row: dict):
+            """Fügt einen Warenausgang-Datensatz in die Tabelle ein (falls noch nicht vorhanden) und aktualisiert Karton/Beutel aus DB."""
+            art = str(self._row_get(row, "Artikelnummer"))
+            art_norm = self._norm_text(art)
+            if art_norm in self.detected_set_ausgang:
+                return
+            menge      = str(self._row_get(row, "Menge"))
+            karton     = str(self._row_get(row, "Karton"))
+            beutel     = str(self._row_get(row, "Beutel"))
+            empfaenger = str(self._row_get(row, "Empfänger"))
+            status     = str(self._row_get(row, "Status"))
+            try:
+                # Reihenfolge inkl. +/- Spalten
+                iid = self.tree_ausgang.insert("", "end",
+                                            values=("-", "+", art, menge, karton, beutel, empfaenger, status))
+                self.detected_set_ausgang.add(art_norm)
+                self.update_row_from_db_async_for_tree(art_norm, self.tree_ausgang, iid)
+            except Exception as e:
+                print(f"[WARN] Konnte Ausgangs-Datensatz nicht einfügen: {e}")
+
         def update_row_from_db_async_for_tree(self, art_norm: str, tree: ttk.Treeview, iid: str):
             """Wie update_row_from_db_async, nur generisch für beliebigen Treeview (Eingang/Ausgang)."""
             if art_norm in self.db_cache_karton_beutel:
@@ -851,42 +918,42 @@ class App(tk.Tk):
                 vals = list(tree.item(iid, "values"))
                 if not vals:
                     return
-                # Eingangs-Tabelle: [Artikelnr, Menge, Karton, Beutel, Status]
-                # Ausgangs-Tabelle: [Artikelnr, Menge, Karton, Beutel, Empfänger, Status]
-                # Karton = Index 2, Beutel = Index 3 bei beiden Tabellen
-                if len(vals) >= 4:
-                    if karton is not None and karton != "":
-                        vals[2] = karton
-                    if beutel is not None and beutel != "":
-                        vals[3] = beutel
-                    tree.item(iid, values=tuple(vals))
+                cols = list(tree["columns"])
+                if "karton" in cols and "beutel" in cols:
+                    idx_k = cols.index("karton")
+                    idx_b = cols.index("beutel")
+                    if len(vals) > max(idx_k, idx_b):
+                        if karton is not None and karton != "":
+                            vals[idx_k] = karton
+                        if beutel is not None and beutel != "":
+                            vals[idx_b] = beutel
+                        tree.item(iid, values=tuple(vals))
             except Exception as e:
                 print(f"[DB] Fehler beim Aktualisieren der Zeile (generic): {e}")
 
         # ---------------------------------------- Drucken-Funktionen ----------------------------------------
 
         def on_drucken_eingang(self):
-            """Druck-Workflow Wareneingang:
-            - Artikelnummer/Menge in Konsole ausgeben
-            - Status in Excel (0→1) setzen
-            - In Tabelle Status 0→✅; war bereits ✅, Zeile entfernen
-            """
-            # Auswahl holen; wenn keine Auswahl, alle Zeilen verarbeiten
+            """Druck-Workflow Wareneingang: Excel-Update nur für NICHT manuelle Einträge."""
             iids = self.tree_eingang.selection()
             if not iids:
                 iids = self.tree_eingang.get_children()
 
+            cols = list(self.tree_eingang["columns"])
+            idx_art = cols.index("artikelnummer")
+            idx_menge = cols.index("menge")
+            idx_status = cols.index("status")
+
             for iid in list(iids):
                 vals = list(self.tree_eingang.item(iid, "values"))
-                if not vals or len(vals) < 5:
+                if not vals or len(vals) <= idx_status:
                     continue
-                artikelnummer = str(vals[0])
-                menge = str(vals[1])
-                status_val = str(vals[4])
+                artikelnummer = str(vals[idx_art])
+                menge = str(vals[idx_menge])
+                status_val = str(vals[idx_status])
 
                 print(f"Artikelnummer: {artikelnummer} | Menge: {menge}")
 
-                # War Status bereits ein grüner Haken? → Zeile entfernen
                 if status_val in ("✅", "✔️", "1"):
                     try:
                         self.tree_eingang.delete(iid)
@@ -894,36 +961,39 @@ class App(tk.Tk):
                         pass
                     continue
 
-                # Status == 0 → Excel aktualisieren und UI auf ✅ setzen
+                # Manuelle Einträge nicht in Excel übernehmen
+                tags = set(self.tree_eingang.item(iid, "tags") or [])
+                is_manual = "manual" in tags
+
                 if status_val.strip() == "0":
-                    updated_excel = self._excel_set_status_eingang(artikelnummer, "1")
-                    # UI aktualisieren (unabhängig vom Excel-Ergebnis setzen wir den Haken)
-                    vals[4] = "✅"
+                    if not is_manual:
+                        _ = self._excel_set_status_eingang(artikelnummer, "1")
+                    # UI-Status immer auf erledigt setzen
+                    vals[idx_status] = "✅"
                     self.tree_eingang.item(iid, values=tuple(vals))
-                    # internen Cache anpassen
                     self._update_internal_eingang_status(artikelnummer, "1")
 
         def on_drucken_ausgang(self):
-            """Druck-Workflow Warenausgang:
-            - Artikelnummer/Menge in Konsole ausgeben
-            - Status in Excel (0→1) setzen
-            - In Tabelle Status 0→✅; war bereits ✅, Zeile entfernen
-            """
+            """Druck-Workflow Warenausgang: Excel-Update nur für NICHT manuelle Einträge."""
             iids = self.tree_ausgang.selection()
             if not iids:
                 iids = self.tree_ausgang.get_children()
 
+            cols = list(self.tree_ausgang["columns"])
+            idx_art = cols.index("artikelnummer")
+            idx_menge = cols.index("menge")
+            idx_status = cols.index("status")
+
             for iid in list(iids):
                 vals = list(self.tree_ausgang.item(iid, "values"))
-                if not vals or len(vals) < 6:
+                if not vals or len(vals) <= idx_status:
                     continue
-                artikelnummer = str(vals[0])
-                menge = str(vals[1])
-                status_val = str(vals[5])
+                artikelnummer = str(vals[idx_art])
+                menge = str(vals[idx_menge])
+                status_val = str(vals[idx_status])
 
                 print(f"Artikelnummer: {artikelnummer} | Menge: {menge}")
 
-                # Bereits erledigt? → Zeile entfernen
                 if status_val in ("✅", "✔️", "1"):
                     try:
                         self.tree_ausgang.delete(iid)
@@ -931,10 +1001,14 @@ class App(tk.Tk):
                         pass
                     continue
 
-                # Status == 0 → Excel aktualisieren und UI auf ✅ setzen
+                # Manuelle Einträge nicht in Excel übernehmen
+                tags = set(self.tree_ausgang.item(iid, "tags") or [])
+                is_manual = "manual" in tags
+
                 if status_val.strip() == "0":
-                    updated_excel = self._excel_set_status_ausgang(artikelnummer, "1")
-                    vals[5] = "✅"
+                    if not is_manual:
+                        _ = self._excel_set_status_ausgang(artikelnummer, "1")
+                    vals[idx_status] = "✅"
                     self.tree_ausgang.item(iid, values=tuple(vals))
                     self._update_internal_ausgang_status(artikelnummer, "1")
 
@@ -1039,6 +1113,163 @@ class App(tk.Tk):
                 if self._norm_text(str(art)) == target:
                     row["Status"] = new_status
                     break
+
+        def on_tree_eingang_click(self, event):
+            """Klicks in der Wareneingang-Tabelle auswerten; +/- ändert die Menge."""
+            region = self.tree_eingang.identify("region", event.x, event.y)
+            if region != "cell":
+                return
+            row_id = self.tree_eingang.identify_row(event.y)
+            col_id = self.tree_eingang.identify_column(event.x)  # '#1', '#2', ...
+            if not row_id or not col_id:
+                return
+            try:
+                col_index = int(col_id.replace("#", "")) - 1
+            except ValueError:
+                return
+            cols = list(self.tree_eingang["columns"])
+            if col_index < 0 or col_index >= len(cols):
+                return
+            col_name = cols[col_index]
+            if col_name == "plus":
+                self._change_eingang_menge(row_id, +1)
+                return "break"
+            if col_name == "minus":
+                self._change_eingang_menge(row_id, -1)
+                return "break"
+
+        def _change_eingang_menge(self, iid: str, delta: int):
+            """Erhöht/Verringert die Menge in der angegebenen Zeile um delta (nicht unter 0)."""
+            cols = list(self.tree_eingang["columns"])
+            if "menge" not in cols:
+                return
+            idx_menge = cols.index("menge")
+            vals = list(self.tree_eingang.item(iid, "values"))
+            if idx_menge >= len(vals):
+                return
+            try:
+                cur = int(str(vals[idx_menge]).strip() or "0")
+            except Exception:
+                cur = 0
+            new_val = max(0, cur + delta)
+            vals[idx_menge] = str(new_val)
+            self.tree_eingang.item(iid, values=tuple(vals))
+
+        def on_add_eingang_click(self):
+            """Fügt Artikelnummer + Menge aus den Eingabefeldern als neuen (manuellen) Eintrag hinzu."""
+            art_in = (self.add_art_var.get() or "").strip()
+            menge_in = (self.add_menge_var.get() or "").strip()
+
+            if art_in == "" or art_in == "Artikelnummer":
+                print("[UI] Bitte eine Artikelnummer eingeben.")
+                return
+            if menge_in == "" or menge_in == "menge":
+                menge_in = "1"
+            try:
+                menge_val = max(0, int(menge_in))
+            except Exception:
+                menge_val = 1
+
+            art_text = art_in.upper()
+            art_norm = self._norm_text(art_text)
+
+            # Initial ohne Karton/Beutel, Status "0"
+            try:
+                iid = self.tree_eingang.insert(
+                    "",
+                    "end",
+                    values=("-", "+", art_text, str(menge_val), "", "", "0"),
+                    tags=("manual",)  # markiert als manuell → kein Excel-Update
+                )
+                # Karton/Beutel aus DB nachladen
+                self.update_row_from_db_async(art_norm, iid)
+            except Exception as e:
+                print(f"[UI] Konnte manuellen Eintrag nicht hinzufügen: {e}")
+
+        def on_add_ausgang_click(self):
+            """Fügt Artikelnummer + Menge (manuell) als neuen Ausgangs-Eintrag hinzu. Kein Excel-Update."""
+            art_in = (self.add_art_var_out.get() or "").strip()
+            menge_in = (self.add_menge_var_out.get() or "").strip()
+
+            if art_in == "" or art_in == "Artikelnummer":
+                print("[UI] Bitte eine Artikelnummer eingeben.")
+                return
+            if menge_in == "" or menge_in == "menge":
+                menge_in = "1"
+            try:
+                menge_val = max(0, int(menge_in))
+            except Exception:
+                menge_val = 1
+
+            art_text = art_in.upper()
+            art_norm = self._norm_text(art_text)
+
+            try:
+                iid = self.tree_ausgang.insert(
+                    "",
+                    "end",
+                    values=("-", "+", art_text, str(menge_val), "", "", "", "0"),
+                    tags=("manual",)
+                )
+                # Karton/Beutel aus DB nachladen
+                self.update_row_from_db_async_for_tree(art_norm, self.tree_ausgang, iid)
+            except Exception as e:
+                print(f"[UI] Konnte manuellen Ausgangs-Eintrag nicht hinzufügen: {e}")
+
+        def on_tree_ausgang_click(self, event):
+            """Klicks in der Warenausgang-Tabelle: +/- ändert die Menge."""
+            region = self.tree_ausgang.identify("region", event.x, event.y)
+            if region != "cell":
+                return
+            row_id = self.tree_ausgang.identify_row(event.y)
+            col_id = self.tree_ausgang.identify_column(event.x)
+            if not row_id or not col_id:
+                return
+            try:
+                col_index = int(col_id.replace("#", "")) - 1
+            except ValueError:
+                return
+            cols = list(self.tree_ausgang["columns"])
+            if col_index < 0 or col_index >= len(cols):
+                return
+            col_name = cols[col_index]
+            if col_name == "plus":
+                self._change_ausgang_menge(row_id, +1)
+                return "break"
+            if col_name == "minus":
+                self._change_ausgang_menge(row_id, -1)
+                return "break"
+
+        def _change_ausgang_menge(self, iid: str, delta: int):
+            """Erhöht/Verringert die Menge der Zeile im Ausgang um delta (nicht unter 0)."""
+            cols = list(self.tree_ausgang["columns"])
+            if "menge" not in cols:
+                return
+            idx_menge = cols.index("menge")
+            vals = list(self.tree_ausgang.item(iid, "values"))
+            if idx_menge >= len(vals):
+                return
+            try:
+                cur = int(str(vals[idx_menge]).strip() or "0")
+            except Exception:
+                cur = 0
+            new_val = max(0, cur + delta)
+            vals[idx_menge] = str(new_val)
+            self.tree_ausgang.item(iid, values=tuple(vals))
+
+        def _setup_placeholder(self, entry: tk.Entry, var: tk.StringVar, placeholder: str):
+            var.set(placeholder)
+            entry.config(fg="grey")
+            def on_focus_in(_e):
+                if var.get() == placeholder:
+                    var.set("")
+                    entry.config(fg="black")
+            def on_focus_out(_e):
+                if var.get().strip() == "":
+                    var.set(placeholder)
+                    entry.config(fg="grey")
+            entry.bind("<FocusIn>", on_focus_in)
+            entry.bind("<FocusOut>", on_focus_out)
 
         # ---------------------------------------- Platzhalter-Funktionen ----------------------------------------
 
